@@ -19,6 +19,8 @@ void SetInitialComposition(FlameParams &flame_params, double *y, double *time)
   const int num_local_points  = flame_params.num_local_points_;
   const int num_states  = flame_params.reactor_->GetNumStates();
   const int num_species = flame_params.reactor_->GetNumSpecies();
+  const int total_soot_vars = params->reactor_->GetNumSectionalTotal();
+  const int soot_idx_start_ = params->reactor_->GetSootIdxStart();
 
   const double pressure = flame_params.parser_->pressure();
   const double ref_temperature = flame_params.parser_->ref_temperature();
@@ -241,6 +243,10 @@ void SetInitialComposition(FlameParams &flame_params, double *y, double *time)
           y[j*num_states+k] = flame_params.inlet_mass_fractions_[k];
         }
       }
+    }
+
+    for(int k=0; k<total_soot_vars; ++k) {
+      y[j*num_states + soot_idx_start_ + k] = 0.0;  // All soot sections initialized to zero
     }
 
     // Renormalize and compute mixture weight

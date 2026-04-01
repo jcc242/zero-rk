@@ -93,6 +93,11 @@ class FlameParams
 
   std::vector<double> step_limiter_;
 
+  std::vector<double> soot_thermophoretic_coefficients_;  // size = num_soot_secs*num_soot_psd*(num_points+1)
+  std::vector<double> soot_diffusion_coefficients_;   // size = num_soot_secs*num_soot_psd*(num_points+1)
+  std::vector<double> soot_source_coefficients_;   // size = num_soot_secs*num_soot_psd*(num_points+1)
+  const double thermophoretic_const_ = 0.554;
+
   // data to evaluate explicit time step limits, evaluated by the CVode
   // right hand side function
   double max_velocity_;          // [m/s]

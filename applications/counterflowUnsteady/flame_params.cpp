@@ -48,7 +48,8 @@ FlameParams::FlameParams(const std::string &input_name, MPI_Comm &comm)
                                     parser_->log_file().c_str(),
                                     COMPRESSED_COL_STORAGE,
                                     parser_->pressure(),
-                                    parser_->finite_separation());
+                                    parser_->finite_separation(),
+				    parser_->use_sectional_library());
   if(reactor_ == NULL) {
     printf("# ERROR: Could not create CounterflowReactor for files:\n"
            "#            mechanism      file = %s\n"

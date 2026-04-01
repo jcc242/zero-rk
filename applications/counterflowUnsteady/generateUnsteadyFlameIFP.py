@@ -431,6 +431,15 @@ spify_parser_params.append(
 }
 )
 
+spify_parser_params.append(
+{
+    'name':'use_sectional_library',
+    'type':'bool',
+    'longDesc' : 'Use Joshua\'s external sectional library',
+    'defaultValue' : 0
+}
+)
+
 #Generate parser code
 spg().generate(spify_parser_name,spify_parser_params)
 

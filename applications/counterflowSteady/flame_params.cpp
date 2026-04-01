@@ -74,7 +74,8 @@ FlameParams::FlameParams(const std::string &input_name)
                                     parser_->log_file().c_str(),
                                     COMPRESSED_COL_STORAGE,
                                     parser_->pressure(),
-                                    parser_->finite_separation());
+                                    parser_->finite_separation(),
+				    false);
   if(reactor_ == NULL) {
     printf("# ERROR: Could not create CounterflowReactor for files:\n"
            "#            mechanism      file = %s\n"

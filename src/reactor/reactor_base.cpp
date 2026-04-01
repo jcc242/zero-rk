@@ -1,5 +1,6 @@
 #include "reactor_base.h"
 
+#include "section_soot.h"
 
 ReactorError ReactorBase::BuildMechanism(const char mechanism_name[],
                                          const char thermodynamics_name[],
@@ -174,5 +175,60 @@ ReactorError
     return INDEX_OUT_OF_RANGE;
   }
   a_multipliers_[step_id] = a_multiplier;
+  return NONE;
+}
+
+ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
+{
+  num_soot_secs_ = 0;
+  num_soot_psd_ = 0;
+  if (!use_sectional) return NONE;
+  std::vector<int> sp_idx(10);
+
+  for (int j=0; j<num_species_; ++j) {
+    std::string current_name = std::string(mechanism_->getSpeciesName(j));
+
+    if (current_name == "C2H2") {
+      sp_idx[0] = j;
+    } else if (current_name == "H2") {
+      sp_idx[1] = j;
+    } else if (current_name == "O2") {
+      sp_idx[2] = j;
+    } else if (current_name == "OH") {
+      sp_idx[3] = j;
+    } else if (current_name == "H") {
+      sp_idx[4] = j;
+    } else if (current_name == "H2O") {
+      sp_idx[5] = j;
+    } else if (current_name == "A4") {
+      sp_idx[6] = j;
+    } else if (current_name == "CO") {
+      sp_idx[7] = j;
+    } else if (current_name == "O") {
+      sp_idx[8] = j;
+    } else if (current_name == "CO2") {
+      sp_idx[9] = j;
+    }
+  }
+  sootsec_initialize_sp_idx(num_species_, sp_idx.data(), &num_soot_secs_, &num_soot_psd_);
+  return NONE;
+}
+
+ReactorError ReactorBase::FinalizeSectionalSoot() {
+  sootsec_finalize();
+  return NONE;
+}
+
+ReactorError ReactorBase::ComputeSootResidual(const std::vector<double>& species_conc,
+					      const std::vector<double>& current_soot_values,
+					      const double temperature,
+					      const double pressure,
+					      const double density,
+					      const double viscosity,
+					      std::vector<double>& species_residual,
+					      std::vector<double>& soot_residual) {
+  sootsec_compute_number_residual(species_conc.data(), current_soot_values.data(),
+				  temperature, pressure, density, viscosity,
+				  species_residual.data(), soot_residual.data());
   return NONE;
 }

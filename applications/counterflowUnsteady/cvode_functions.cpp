@@ -56,6 +56,9 @@ int ConstPressureFlameLocal(long int nlocal,
   const int num_total_points = params->z_.size();
   const int num_states  = params->reactor_->GetNumStates();
   const int num_species = params->reactor_->GetNumSpecies();
+  const int soot_idx_start_ = params->reactor_->GetSootIdxStart();
+  const int total_soot_vars = params->reactor_->GetNumSectionalTotal();
+  const int num = params->reactor_->GetNumSpecies();
   const int num_local_states = num_local_points*num_states;
   const int convective_scheme_type = params->convective_scheme_type_;
   int my_pe = params->my_pe_;
@@ -93,6 +96,7 @@ int ConstPressureFlameLocal(long int nlocal,
   // compute the constant pressure reactor source term
   // using Zero-RK
   for(int j=0; j<num_local_points; ++j) {
+    params->reactor_->SetViscosity(params->mixture_viscosity_[j]);
     params->reactor_->GetTimeDerivativeLimiter(t,
                                                &y_ptr[j*num_states],
                                                &params->step_limiter_[0],
@@ -167,6 +171,12 @@ int ConstPressureFlameLocal(long int nlocal,
         params->y_ext_[j*num_states+num_species+2] =
           params->y_ext_[nover*num_states+num_species+2];//zero gradient
       }
+
+      // Zero soot at left BC
+      for(int k=0; k<total_soot_vars; ++k) {
+        params->y_ext_[j*num_states + soot_idx_start_ + k] = 0.0;  
+      }
+
       params->mass_flux_ext_[j] = params->mass_flux_fuel_;
     }
   }
@@ -203,6 +213,11 @@ int ConstPressureFlameLocal(long int nlocal,
       } else {
         params->y_ext_[j*num_states+num_species+2] =
           params->y_ext_[(num_local_points+nover-1)*num_states+num_species+2];//dG/dx=0
+      }
+      // Zero-gradient soot at right BC
+      for(int k=0; k<total_soot_vars; ++k) {
+        params->y_ext_[j*num_states + soot_idx_start_ + k] =
+	  params->y_ext_[(num_local_points+nover-1)*num_states+soot_idx_start_+k];
       }
       params->mass_flux_ext_[j] = params->mass_flux_oxidizer_;
     }
@@ -394,6 +409,7 @@ int ConstPressureFlameLocal(long int nlocal,
 
   //--------------------------------------------------------------------------
   // Compute the interior heat capacity, conductivity, and species mass fluxes.
+  //--------------------------------------------------------------------------
   for(int j=0; j<num_local_points+1; ++j) {
     int jext = j + nover;
 
@@ -477,6 +493,21 @@ int ConstPressureFlameLocal(long int nlocal,
       return transport_error;
     }
 
+    double relative_volume_midpoint = 0.5*(params->y_ext_[jext*num_states+num_species]
+					   + params->y_ext_[(jext-1)*num_states+num_species]);
+
+    double density_midpoint = 1.0/relative_volume_midpoint;
+
+    // Thermophoretic velocity
+    for(int k=0; k<total_soot_vars; ++k) {
+      double soot_value_midpoint = 0.5*(params->y_ext_[jext*num_states+soot_idx_start_+k]
+					+ params->y_ext_[(jext-1)*num_states+soot_idx_start_+k]);
+      params->soot_thermophoretic_coefficients_[j] =
+	-density_midpoint*soot_value_midpoint* // rho*Y_{s,i}
+	params->thermophoretic_const_*params->mixture_viscosity_[j]*relative_volume_midpoint; // Cth*mu/rho. 
+      // Note: gradient of temperature multiplied in later
+    }
+
   } // for j<num_local_points+1
 
   //--------------------------------------------------------------------------
@@ -547,6 +578,7 @@ int ConstPressureFlameLocal(long int nlocal,
 	( params->species_mass_flux_[num_species*(j+1)+k]
 	 -params->species_mass_flux_[num_species*j+k]);
     }
+
 
     // compute the species specific heat diffusive flux sum
     cp_flux_sum = 0.0;
@@ -634,6 +666,25 @@ int ConstPressureFlameLocal(long int nlocal,
       }
     }
 
+    for(int k=0; k<total_soot_vars; ++k) {
+      // Soot convection term
+      rhs_conv[j*num_states + soot_idx_start_ + k] -= relative_volume_j*
+	(a*params->y_ext_[(jext+2)*num_states + soot_idx_start_ + k] +
+	 b*params->y_ext_[(jext+1)*num_states + soot_idx_start_ + k] +
+	 c*params->y_ext_[ jext  *num_states + soot_idx_start_ + k] +
+	 d*params->y_ext_[(jext-1)*num_states + soot_idx_start_ + k] +
+	 e*params->y_ext_[(jext-2)*num_states + soot_idx_start_ + k]);
+      // Soot thermophoretic term
+      rhs_diff[j*num_states + soot_idx_start_ + k] -= (relative_volume_j*inv_dzm[jext])*
+	(params->soot_thermophoretic_coefficients_[j+1]*inv_dz[jext+1]*
+	 (params->y_ext_[(jext+1)*num_states+num_species+1] -
+	  params->y_ext_[jext*num_states+num_species+1])
+	 -params->soot_thermophoretic_coefficients_[j]*inv_dz[jext]*
+	 (params->y_ext_[jext*num_states+num_species+1] -
+	  params->y_ext_[(jext-1)*num_states+num_species+1]));
+
+      // We neglect soot diffusion for now
+    }
   } // for(int j=0; j<num_local_points; ++j) // loop computing rhs
 
 
@@ -669,6 +720,14 @@ int ConstPressureFlameLocal(long int nlocal,
       int strain_id = rvol_id+3;               // strain index of pt j
       ydot_ptr[strain_id] = rhs_diff[strain_id];
     }
+
+    for(int k=0; k<total_soot_vars; ++k) {
+      ydot_ptr[j*num_states + soot_idx_start_ + k] =
+	rhs_conv[j*num_states + soot_idx_start_ + k]*params->mass_flux_[j]
+	+ rhs_chem[j*num_states + soot_idx_start_ + k]
+	+ rhs_diff[j*num_states + soot_idx_start_ + k];
+    }
+
   }
 
   // -------------------------------------------------------------------------
@@ -871,6 +930,7 @@ int ReactorPreconditionerChemistrySetup(realtype t,      // [in] ODE system time
       // The Jacobian is not okay, need to recompute
       params->saved_jacobian_.assign(num_nonzeros*num_local_points, 0.0);
       for(int j=0; j<num_local_points; ++j) {
+	params->reactor_->SetViscosity(params->mixture_viscosity_[j]);
         params->reactor_->GetJacobianLimiter(t,
 					     &y_ptr[j*num_states],
 					     &params->step_limiter_[0],
@@ -917,6 +977,7 @@ int ReactorPreconditionerChemistrySetup(realtype t,      // [in] ODE system time
     // recompute and factor the Jacobian, there is no saved data
     // TODO: offer option for the fake update
     for(int j=0; j<num_local_points; ++j) {
+      params->reactor_->SetViscosity(params->mixture_viscosity_[j]);
       params->reactor_->GetJacobianLimiter(t,
 					   &y_ptr[j*num_states],
 					   &params->step_limiter_[0],

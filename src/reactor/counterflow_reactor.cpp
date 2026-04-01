@@ -17,7 +17,8 @@ class CounterflowReactor::Impl: public ReactorBase
        const char parser_log_name[],
        const MatrixType matrix_type,
        const double pressure,
-       const bool finite_separation);
+       const bool finite_separation,
+       const bool use_sectional);
 
   ~Impl();
 
@@ -54,6 +55,7 @@ class CounterflowReactor::Impl: public ReactorBase
                          int column_id[]);
   // --------------------------------------
   // additional functions specific to the reactor type
+  void SetViscosity(const double viscosity);
   void SetReferenceTemperature(const double ref_temperature);
   double GetReferenceTemperature() const;
   void SetPressure(const double pressure);
@@ -66,6 +68,7 @@ class CounterflowReactor::Impl: public ReactorBase
   double GetMixtureSpecificHeat_Cp(const double temperature,
                                    const double mass_fractions[],
                                    double *species_cp);
+  int GetSootIdxStart() const;
 
  private:
   int BuildSparseJacobianArrays();
@@ -114,6 +117,8 @@ class CounterflowReactor::Impl: public ReactorBase
   double pressure_;
   bool use_scaled_state_;
   bool finite_separation_;
+  int soot_idx_start_; // Starting index for soot
+  double mixture_viscosity_; // current mixture dynamic viscosity [kg/m/s]
 
   // time derivative storage arrays
   std::vector<double> concentrations_;
@@ -123,6 +128,11 @@ class CounterflowReactor::Impl: public ReactorBase
   std::vector<double> creation_rates_;
   std::vector<double> destruction_rates_;
   std::vector<double> step_rates_;
+
+  // Soot time derivative storage array
+  std::vector<double> soot_values_;
+  std::vector<double> soot_residual_;
+  std::vector<double> species_residual_from_soot_;
 
   // Jacobian storage arrays
   std::vector<int> destroy_concentration_id_;
@@ -158,7 +168,8 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
                                const char parser_log_name[],
                                const MatrixType matrix_type,
                                const double pressure,
-                               const bool finite_separation)
+                               const bool finite_separation,
+			       const bool use_sectional)
 {
   int jacobian_size;
   std::string info;
@@ -166,6 +177,8 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
   std::string species_prefix;
   std::vector<std::string> state_names;
   zerork::mechanism *mechanism_ptr;
+
+
 
   // set constructor arguments
   SetMatrixType(matrix_type);
@@ -180,6 +193,10 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
   BuildMechanism(mechanism_name,
                  thermodynamics_name,
                  parser_log_name);
+
+  // Soot needs to be set up after mechanism because it needs the species names
+  // Initialize even if not using because we need to set number of sections (even if that number is zero)
+  InitializeSectionalSoot(use_sectional); 
 
   // create the vector of state names
   state_names.clear();
@@ -198,6 +215,23 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
   state_names.push_back(std::string("Momentum"));
   if(finite_separation_)
     state_names.push_back(std::string("PStrain"));
+
+
+  soot_idx_start_ = num_species + 3;
+  if(finite_separation_) soot_idx_start_ += 1;
+
+  // ============================================================================
+  // SOOT MODEL INTEGRATION: Set soot sectional bin names
+  // ============================================================================
+  if(UseSectional()) {
+    int num_sec = GetNumSectional();
+    int num_psd = GetNumSectionalPSD();
+    for (int j=0; j<num_psd; ++j) {
+      for (int i=0; i<num_sec; ++i) {
+	state_names.push_back("PSD"+std::to_string(j)+"_Bin"+std::to_string(i));
+      }
+    }
+  }
   BuildStateNamesMap(state_names);
   const int num_states = static_cast<int>(state_names.size());
 
@@ -250,6 +284,9 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
   creation_rates_.assign(num_species,0.0);
   destruction_rates_.assign(num_species,0.0);
   step_rates_.assign(num_steps,0.0);
+  soot_values_.assign(GetNumSectionalTotal(), 0.0);
+  soot_residual_.assign(GetNumSectionalTotal(), 0.0);
+  species_residual_from_soot_.assign(num_species, 0.0);
   // pre-assign the size of the internal jacobian space vectors
   inv_concentrations_.assign(num_species,0.0);
   original_state_.assign(num_states,0.0);
@@ -461,6 +498,8 @@ ReactorError
 {
   // define local constants of class members to enable loop vectorization
   const int num_species            = GetNumSpecies();
+  const int total_soot_vars        = GetNumSectionalTotal();
+  const int soot_idx_start         = soot_idx_start_;
   const double ref_temperature     = ref_temperature_;
   const double inv_ref_temperature = inv_ref_temperature_;
   const double pressure            = pressure_;
@@ -482,6 +521,19 @@ ReactorError
   // compute concentration, total_moles and temperature from the current state
   for(int j=0; j<num_species; ++j) {
     concentrations_[j] = density*state[j]*inv_molecular_mass_[j];
+  }
+
+  // Soot section derivatives. We compute this first because it affects the
+  // species derivative (via surface chemistry, nucleation, etc.)
+  for(int j=0; j<total_soot_vars; ++j) {
+    soot_values_[j] = state[soot_idx_start_ + j];
+  }
+  ComputeSootResidual(concentrations_,
+		      soot_values_,
+		      temperature, pressure, density, mixture_viscosity_,
+		      species_residual_from_soot_, soot_residual_);
+  for (int j=0; j<total_soot_vars; ++j) {
+    derivative[soot_idx_start_ + j] = soot_residual_[j]*relative_volume;
   }
 
   // compute the rate of change of the species concentration
@@ -511,7 +563,8 @@ ReactorError
     //enthalpy_sum += derivative[j]*enthalpies_[j]*inv_molecular_mass_[j];
 
     // Multiplication saving formulas:
-    derivative[j] = relative_volume*net_reaction_rates_[j];
+    derivative[j] = relative_volume*net_reaction_rates_[j]
+      + species_residual_from_soot_[j];
     mass_sum += derivative[j];
     enthalpy_sum += derivative[j]*enthalpies_[j];
     derivative[j] *= molecular_mass_[j];
@@ -539,6 +592,7 @@ ReactorError
 
   // P strain
   //derivative[num_species+3] = 0.0;
+
 
   return NONE; // no error
 }
@@ -646,9 +700,14 @@ int CounterflowReactor::Impl::BuildSparseJacobianArrays()
   }
   const int num_species = mechanism_ptr->getNumSpecies();
   const int num_steps   = mechanism_ptr->getNumSteps();
+  const int num_sectional = GetNumSectional();
   int num_states  = num_species + 3; // relative volume/mass flux, temperature, momentum
   if(finite_separation_)
     num_states  = num_species + 4; // relative volume/mass flux, temperature, momentum, pstrain
+
+
+  const int soot_idx_start = num_states;
+  num_states += num_sectional;
 
   // clear the jacobian arrays
   destroy_concentration_id_.clear();
@@ -793,6 +852,24 @@ int CounterflowReactor::Impl::BuildSparseJacobianArrays()
   // d(rhs P)/dU (only at last grid point)
   dense_id = num_species+3 + (num_species+2)*num_states;
   dense_to_sparse_map[dense_id] = 1;
+
+  // dense row for soot sections
+  for (int j = 0; j<num_states; ++j) {
+    for (int k=0; k<num_sectional; ++k) {
+      int soot_row = soot_idx_start + k;
+      dense_id = soot_row + j*num_states;
+      dense_to_sparse_map[dense_id] = 1;
+    }
+  }
+
+  // dense columns for soot sections
+  for (int k=0; k<num_sectional; ++k) {
+      int soot_col = soot_idx_start + k;
+      for(int j=0; j<num_states; ++j) {
+	dense_id = j + soot_col*num_states;
+	dense_to_sparse_map[dense_id] = 1;
+      }
+    }
 
   // add the diagonal for all states
   for(int j=0; j<num_states; ++j) {
@@ -1402,6 +1479,8 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
   const int num_species            = GetNumSpecies();
   const int num_states             = GetNumStates();
   const int num_nonzeros           = GetJacobianSize();
+  const int num_sectional          = GetNumSectionalTotal();
+  const int soot_idx_start         = soot_idx_start_;
   const double ref_temperature     = ref_temperature_;
   const double inv_ref_temperature = inv_ref_temperature_;
   const double pressure            = pressure_;
@@ -1412,6 +1491,7 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
   double mix_mass_cp, RuT;
   double mass_sum, enthalpy_sum;
   double d_temperature, d_relative_volume;
+  double d_soot;
   double min_concentration;
   zerork::mechanism *mechanism_ptr;
 
@@ -1655,6 +1735,25 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
 					   &perturbed_derivative_[0],
 					   &jacobian[jacobian_column_sum_[num_species+1]]);
 
+
+  for(int j=0; j<num_sectional; ++j) {
+    int soot_col_id = soot_idx_start + j;
+    d_soot = original_state_[soot_col_id]*perturb_factor;
+
+    if(fabs(d_soot) < 1.0e-30) {
+      d_soot = 1.0e-30;
+    }
+    GetJacobianColumnFromPerturbationLimiter(soot_col_id,
+					     d_soot,
+					     reactor_time,
+					     &original_state_[0],
+					     &original_derivative_[0],
+					     &step_limiter[0],
+					     &perturbed_state_[0],
+					     &perturbed_derivative_[0],
+					     &jacobian[jacobian_column_sum_[soot_col_id]]);
+  }
+  
   // Momentum
   jacobian[jacobian_column_sum_[num_species+2]] = 0.0;
 
@@ -1793,6 +1892,9 @@ int CounterflowReactor::Impl::GetNetStoichiometry(const int species_id,
   return species_product_count-species_reactant_count;
 }
 
+void CounterflowReactor::Impl::SetViscosity(const double viscosity) {
+  mixture_viscosity_ = viscosity;
+}
 
 void CounterflowReactor::Impl::SetReferenceTemperature(const double ref_temperature)
 {
@@ -1865,6 +1967,11 @@ CounterflowReactor::Impl::GetMixtureSpecificHeat_Cp(const double temperature,
   return mass_cp;
 }
 
+int CounterflowReactor::Impl::GetSootIdxStart() const
+{
+  return soot_idx_start_;
+}
+
 // ---------------------------------------------------------------------------
 // Public facing API
 CounterflowReactor::CounterflowReactor(const char mechanism_name[],
@@ -1872,14 +1979,16 @@ CounterflowReactor::CounterflowReactor(const char mechanism_name[],
                                        const char parser_log_name[],
                                        const MatrixType matrix_type,
                                        const double pressure,
-                                       const bool finite_separation)
+                                       const bool finite_separation,
+				       const bool use_sectional)
 {
   impl_ = new Impl(mechanism_name,
                    thermodynamics_name,
                    parser_log_name,
                    matrix_type,
                    pressure,
-                   finite_separation);
+                   finite_separation,
+		   use_sectional);
 }
 
 CounterflowReactor::~CounterflowReactor()
@@ -1965,6 +2074,16 @@ int CounterflowReactor::GetNumSteps() const
   return impl_->GetNumSteps();
 }
 
+int CounterflowReactor::GetNumSectionalTotal() const
+{
+  return impl_->GetNumSectionalTotal();
+}
+
+int CounterflowReactor::GetSootIdxStart() const
+{
+  return impl_->GetSootIdxStart();
+}
+
 int CounterflowReactor::GetJacobianSize() const
 {
   return impl_->GetJacobianSize();
@@ -2043,6 +2162,10 @@ ReactorError CounterflowReactor::SetAMultiplierOfStepId(const int step_id, const
   return impl_->SetAMultiplierOfStepId(step_id,a_multiplier);
 }
 
+void CounterflowReactor::SetViscosity(const double viscosity)
+{
+  impl_->SetViscosity(viscosity);
+}
 void CounterflowReactor::SetReferenceTemperature(const double ref_temperature)
 {
   impl_->SetReferenceTemperature(ref_temperature);
@@ -2108,4 +2231,9 @@ void CounterflowReactor::GetSpeciesMolecularWeight(double molecular_weight[]) co
 double CounterflowReactor::GetGasConstant() const
 {
   return impl_->GetGasConstant();
+}
+
+void CounterflowReactor::FinalizeSectionalSoot() const
+{
+  impl_->FinalizeSectionalSoot();
 }

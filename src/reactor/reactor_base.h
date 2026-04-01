@@ -92,6 +92,25 @@ class ReactorBase
   double GetGasConstant() const
     {return mechanism_->getGasConstant();}
 
+  ReactorError InitializeSectionalSoot(const bool use_sectional);
+  bool UseSectional() const
+  {return use_sectional_;}
+  int GetNumSectional() const
+  {return num_soot_secs_;}
+  int GetNumSectionalPSD() const
+  {return num_soot_psd_;}
+  int GetNumSectionalTotal() const
+  {return num_soot_psd_*num_soot_secs_;}
+  ReactorError FinalizeSectionalSoot();
+  ReactorError ComputeSootResidual(const std::vector<double>& species_conc,
+				   const std::vector<double>& current_soot_values,
+				   const double temperature,
+				   const double pressure,
+				   const double density,
+				   const double viscosity,
+				   std::vector<double>& species_residual,
+				   std::vector<double>& soot_residual);
+
  private:
 
   // data set in BuildMechanism
@@ -113,6 +132,11 @@ class ReactorBase
   int num_states_;
   std::map<std::string, int> state_names_map_;
   std::vector<std::string> state_names_;
+
+  // data set in BuildSoot
+  bool use_sectional_;
+  int num_soot_secs_;
+  int num_soot_psd_;
 };
 
 

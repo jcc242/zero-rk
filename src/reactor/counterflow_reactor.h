@@ -13,7 +13,8 @@ class CounterflowReactor
                      const char parser_log_name[],
                      const MatrixType matrix_type,
                      const double pressure,
-                     const bool finite_separation);
+                     const bool finite_separation,
+		     const bool use_sectional);
   ~CounterflowReactor();
 
   ReactorError GetTimeDerivative(const double reactor_time,
@@ -53,6 +54,7 @@ class CounterflowReactor
   int GetNumReactions() const;
   int GetNumSteps() const;
   int GetJacobianSize() const;
+  int GetNumSectionalTotal() const;
   MatrixType GetMatrixType() const;
 
   const char * GetMechanismName() const;
@@ -94,6 +96,7 @@ class CounterflowReactor
   ReactorError SetAMultiplierOfStepId(const int step_id,
                                       const double a_multiplier);
 
+  void SetViscosity(const double viscosity);
   void SetReferenceTemperature(const double ref_temperature);
   double GetReferenceTemperature() const;
   void SetPressure(const double pressure);
@@ -116,6 +119,8 @@ class CounterflowReactor
                                    const double state[],
                                    double *species_cp);
 
+  int GetSootIdxStart() const;
+  void FinalizeSectionalSoot() const;
  private:
   class Impl;
   Impl *impl_;

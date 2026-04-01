@@ -39,6 +39,16 @@ option(ENABLE_OPENMP "Enable OpenMP (currently only used in cfd_plugin_tester)" 
 option(ZERORK_TESTS "Enable Zero-RK Tests" ON)
 option(ZERORK_EXP_LIBC "Use libc exponential function instead of platform fast exponential" OFF)
 
+option(ENABLE_NASA_SOOT "Enable using the NASA sectional soot model" OFF)
+set(NASA_SOOT_PATH "" CACHE PATH "Path to the NASA soot directory")
+if(ENABLE_NASA_SOOT)
+  if("${NASA_SOOT_PATH}" STREQUAL "")
+    message(FATAL_ERROR "ENABLE_NASA_SOOT is ON but NASA_SOOT_PATH is not set. "
+                        "Please provide -DNASA_SOOT_PATH=/path/to/nasa_soot_files")
+  endif()
+endif()
+
+
 if(WIN32)
   set(ZERORK_EXTERNALS_BUILD_TYPE "${CMAKE_BUILD_TYPE}" CACHE STRING "Build type for external dependencies built during config.")
 else()

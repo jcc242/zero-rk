@@ -432,6 +432,7 @@ int main(int argc, char *argv[])
 			   flame_params);
         SootOutput(flame_params,&flame_state_ptr[0]);
       }
+	flame_params.reactor_->FinalizeSectionalSoot();
 
     } else {
       printf("# ERROR: In time marching loop,\n");

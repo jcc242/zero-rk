@@ -5,7 +5,22 @@ target_include_directories(reactor PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOUR
                                           $<INSTALL_INTERFACE:include>
                                    PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
-target_link_libraries(reactor zerork)
+# Add the soot library
+find_path(
+	NASA_SOOT_DIR
+	NAMES libsection_soot.so
+	PATHS ${NASA_SOOT_PATH}
+	)
+find_library(
+	NASA_SOOT_LIB
+	NAMES section_soot
+	PATHS ${NASA_SOOT_PATH}
+)
+if(NOT NASA_SOOT_DIR OR NOT NASA_SOOT_LIB)
+    message(FATAL_ERROR "NASA soot library not found! Set NASA_SOOT_DIR and NASA_SOOT_LIB.")
+endif()
+target_link_libraries(reactor PUBLIC zerork PRIVATE ${NASA_SOOT_LIB})
+target_include_directories(reactor PRIVATE ${NASA_SOOT_DIR})
 
 set(public_headers const_pressure_reactor.h counterflow_reactor.h
 reactor_base.h reactor_constants.h
