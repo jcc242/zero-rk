@@ -44,7 +44,7 @@ set(NASA_SOOT_PATH "" CACHE PATH "Path to the NASA soot directory")
 if(ENABLE_NASA_SOOT)
   if("${NASA_SOOT_PATH}" STREQUAL "")
     message(FATAL_ERROR "ENABLE_NASA_SOOT is ON but NASA_SOOT_PATH is not set. "
-                        "Please provide -DNASA_SOOT_PATH=/path/to/nasa_soot_files")
+                        "Please provide -DNASA_SOOT_DIR=/path/to/nasa_soot_files")
   endif()
 endif()
 

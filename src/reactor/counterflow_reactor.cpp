@@ -160,6 +160,9 @@ class CounterflowReactor::Impl: public ReactorBase
   std::vector<double> noninteger_jacobian_;
   std::vector<int> noninteger_sparse_id_;
 
+
+  std::vector<double> soot_sec_mass_;
+
 };
 
 // Implementation of the pure member functions from the ReactorBase class
@@ -197,6 +200,7 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
   // Soot needs to be set up after mechanism because it needs the species names
   // Initialize even if not using because we need to set number of sections (even if that number is zero)
   InitializeSectionalSoot(use_sectional); 
+  soot_sec_mass_ = GetSectionsMass();
 
   // create the vector of state names
   state_names.clear();
@@ -526,14 +530,14 @@ ReactorError
   // Soot section derivatives. We compute this first because it affects the
   // species derivative (via surface chemistry, nucleation, etc.)
   for(int j=0; j<total_soot_vars; ++j) {
-    soot_values_[j] = state[soot_idx_start_ + j];
+    soot_values_[j] = density*state[soot_idx_start_ + j]/soot_sec_mass_[j];
   }
   ComputeSootResidual(concentrations_,
 		      soot_values_,
 		      temperature, pressure, density, mixture_viscosity_,
 		      species_residual_from_soot_, soot_residual_);
   for (int j=0; j<total_soot_vars; ++j) {
-    derivative[soot_idx_start_ + j] = soot_residual_[j]*relative_volume;
+    derivative[soot_idx_start_ + j] = soot_residual_[j]*relative_volume*soot_sec_mass_[j];
   }
 
   // compute the rate of change of the species concentration
@@ -564,7 +568,7 @@ ReactorError
 
     // Multiplication saving formulas:
     derivative[j] = relative_volume*net_reaction_rates_[j]
-      + species_residual_from_soot_[j];
+      + relative_volume*species_residual_from_soot_[j];
     mass_sum += derivative[j];
     enthalpy_sum += derivative[j]*enthalpies_[j];
     derivative[j] *= molecular_mass_[j];
@@ -700,7 +704,7 @@ int CounterflowReactor::Impl::BuildSparseJacobianArrays()
   }
   const int num_species = mechanism_ptr->getNumSpecies();
   const int num_steps   = mechanism_ptr->getNumSteps();
-  const int num_sectional = GetNumSectional();
+  const int num_sectional = GetNumSectionalTotal();
   int num_states  = num_species + 3; // relative volume/mass flux, temperature, momentum
   if(finite_separation_)
     num_states  = num_species + 4; // relative volume/mass flux, temperature, momentum, pstrain

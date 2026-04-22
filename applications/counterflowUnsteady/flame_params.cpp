@@ -693,6 +693,11 @@ void FlameParams::SetMemory()
   // create the workspace for the mixture molecular mass at each interface
   molecular_mass_mix_mid_.assign(num_local_points+1, 0.0);
 
+  // create the workspace for the soot coefficients at each grid point
+  soot_thermophoretic_coefficients_.assign(num_local_points+1, 0.0);
+  soot_thermophoretic_coefficients_.assign(num_local_points+1, 0.0);  
+  soot_diffusion_coefficients_.assign(num_local_points+1, 0.0);
+
   // Get convective scheme type
   convective_scheme_type_ = parser_->convective_scheme_type();
 

@@ -19,8 +19,9 @@ find_library(
 if(NOT NASA_SOOT_DIR OR NOT NASA_SOOT_LIB)
     message(FATAL_ERROR "NASA soot library not found! Set NASA_SOOT_DIR and NASA_SOOT_LIB.")
 endif()
-target_link_libraries(reactor PUBLIC zerork PRIVATE ${NASA_SOOT_LIB})
-target_include_directories(reactor PRIVATE ${NASA_SOOT_DIR})
+message(WARNING "Found NASA_SOOT_DIR: ${NASA_SOOT_DIR} and NASA_SOOT_LIB: ${NASA_SOOT_LIB}")
+target_link_libraries(reactor PUBLIC zerork ${NASA_SOOT_LIB})
+target_include_directories(reactor PUBLIC ${NASA_SOOT_DIR})
 
 set(public_headers const_pressure_reactor.h counterflow_reactor.h
 reactor_base.h reactor_constants.h

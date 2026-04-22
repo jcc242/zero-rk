@@ -60,7 +60,7 @@ int
   ReactorBase::BuildStateNamesMap(const std::vector<std::string> &state_names)
 {
   num_states_ = static_cast<int>(state_names.size());
-  //printf("num_states_: %d\n",num_states_);
+  printf("num_states_: %d\n",num_states_);
   fflush(stdout);
   state_names_.clear();
   state_names_map_.clear();
@@ -182,7 +182,8 @@ ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
 {
   num_soot_secs_ = 0;
   num_soot_psd_ = 0;
-  if (!use_sectional) return NONE;
+  use_sectional_ = use_sectional;
+  if (!use_sectional_) return NONE;
   std::vector<int> sp_idx(10);
 
   for (int j=0; j<num_species_; ++j) {
@@ -211,6 +212,8 @@ ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
     }
   }
   sootsec_initialize_sp_idx(num_species_, sp_idx.data(), &num_soot_secs_, &num_soot_psd_);
+  soot_masses_.assign(num_soot_secs_*num_soot_psd_, 0.0);
+  sootsec_mass_si(soot_masses_.data());
   return NONE;
 }
 
@@ -227,8 +230,8 @@ ReactorError ReactorBase::ComputeSootResidual(const std::vector<double>& species
 					      const double viscosity,
 					      std::vector<double>& species_residual,
 					      std::vector<double>& soot_residual) {
-  sootsec_compute_number_residual(species_conc.data(), current_soot_values.data(),
-				  temperature, pressure, density, viscosity,
-				  species_residual.data(), soot_residual.data());
+  sootsec_compute_residual_si(species_conc.data(), current_soot_values.data(),
+			      temperature, pressure, density, viscosity,
+			      species_residual.data(), soot_residual.data());
   return NONE;
 }
