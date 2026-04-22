@@ -214,10 +214,9 @@ int ConstPressureFlameLocal(long int nlocal,
         params->y_ext_[j*num_states+num_species+2] =
           params->y_ext_[(num_local_points+nover-1)*num_states+num_species+2];//dG/dx=0
       }
-      // Zero-gradient soot at right BC
+      // Zero soot at right BC
       for(int k=0; k<total_soot_vars; ++k) {
-        params->y_ext_[j*num_states + soot_idx_start_ + k] =
-	  params->y_ext_[(num_local_points+nover-1)*num_states+soot_idx_start_+k];
+        params->y_ext_[j*num_states + soot_idx_start_ + k] = 0.0;
       }
       params->mass_flux_ext_[j] = params->mass_flux_oxidizer_;
     }
