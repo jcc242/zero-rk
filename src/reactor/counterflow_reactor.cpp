@@ -200,7 +200,9 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
   // Soot needs to be set up after mechanism because it needs the species names
   // Initialize even if not using because we need to set number of sections (even if that number is zero)
   InitializeSectionalSoot(use_sectional); 
-  soot_sec_mass_ = GetSectionsMass();
+  if(UseSectional()) {
+    soot_sec_mass_ = GetSectionsMass();
+  }
 
   // create the vector of state names
   state_names.clear();
@@ -224,9 +226,7 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
   soot_idx_start_ = num_species + 3;
   if(finite_separation_) soot_idx_start_ += 1;
 
-  // ============================================================================
-  // SOOT MODEL INTEGRATION: Set soot sectional bin names
-  // ============================================================================
+  // Set soot sectional bin names
   if(UseSectional()) {
     int num_sec = GetNumSectional();
     int num_psd = GetNumSectionalPSD();
@@ -235,7 +235,7 @@ CounterflowReactor::Impl::Impl(const char mechanism_name[],
 	state_names.push_back("PSD"+std::to_string(j)+"_Bin"+std::to_string(i));
       }
     }
-  }
+  } // UseSectional
   BuildStateNamesMap(state_names);
   const int num_states = static_cast<int>(state_names.size());
 
@@ -527,17 +527,19 @@ ReactorError
     concentrations_[j] = density*state[j]*inv_molecular_mass_[j];
   }
 
-  // Soot section derivatives. We compute this first because it affects the
-  // species derivative (via surface chemistry, nucleation, etc.)
-  for(int j=0; j<total_soot_vars; ++j) {
-    soot_values_[j] = density*state[soot_idx_start_ + j]/soot_sec_mass_[j];
-  }
-  ComputeSootResidual(concentrations_,
-		      soot_values_,
-		      temperature, pressure, density, mixture_viscosity_,
-		      species_residual_from_soot_, soot_residual_);
-  for (int j=0; j<total_soot_vars; ++j) {
-    derivative[soot_idx_start_ + j] = soot_residual_[j]*relative_volume*soot_sec_mass_[j];
+  if(UseSectional()) {
+    // Soot section derivatives. We compute this first because it affects the
+    // species derivative (via surface chemistry, nucleation, etc.)
+    for(int j=0; j<total_soot_vars; ++j) {
+      soot_values_[j] = density*state[soot_idx_start_ + j]/soot_sec_mass_[j];
+    }
+    ComputeSootResidual(concentrations_,
+			soot_values_,
+			temperature, pressure, density, mixture_viscosity_,
+			species_residual_from_soot_, soot_residual_);
+    for (int j=0; j<total_soot_vars; ++j) {
+      derivative[soot_idx_start_ + j] = soot_residual_[j]*relative_volume*soot_sec_mass_[j];
+    }
   }
 
   // compute the rate of change of the species concentration
@@ -857,23 +859,25 @@ int CounterflowReactor::Impl::BuildSparseJacobianArrays()
   dense_id = num_species+3 + (num_species+2)*num_states;
   dense_to_sparse_map[dense_id] = 1;
 
-  // dense row for soot sections
-  for (int j = 0; j<num_states; ++j) {
-    for (int k=0; k<num_sectional; ++k) {
-      int soot_row = soot_idx_start + k;
-      dense_id = soot_row + j*num_states;
-      dense_to_sparse_map[dense_id] = 1;
+  if(UseSectional()) {
+    // dense row for soot sections
+    for (int j = 0; j<num_states; ++j) {
+      for (int k=0; k<num_sectional; ++k) {
+	int soot_row = soot_idx_start + k;
+	dense_id = soot_row + j*num_states;
+	dense_to_sparse_map[dense_id] = 1;
+      }
     }
-  }
 
-  // dense columns for soot sections
-  for (int k=0; k<num_sectional; ++k) {
+    // dense columns for soot sections
+    for (int k=0; k<num_sectional; ++k) {
       int soot_col = soot_idx_start + k;
       for(int j=0; j<num_states; ++j) {
 	dense_id = j + soot_col*num_states;
 	dense_to_sparse_map[dense_id] = 1;
       }
     }
+  }
 
   // add the diagonal for all states
   for(int j=0; j<num_states; ++j) {
@@ -1740,23 +1744,25 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
 					   &jacobian[jacobian_column_sum_[num_species+1]]);
 
 
-  for(int j=0; j<num_sectional; ++j) {
-    int soot_col_id = soot_idx_start + j;
-    d_soot = original_state_[soot_col_id]*perturb_factor;
+  if(UseSectional()) {
+    for(int j=0; j<num_sectional; ++j) {
+      int soot_col_id = soot_idx_start + j;
+      d_soot = original_state_[soot_col_id]*perturb_factor;
 
-    if(fabs(d_soot) < 1.0e-30) {
-      d_soot = 1.0e-30;
+      if(fabs(d_soot) < 1.0e-30) {
+	d_soot = 1.0e-30;
+      }
+      GetJacobianColumnFromPerturbationLimiter(soot_col_id,
+					       d_soot,
+					       reactor_time,
+					       &original_state_[0],
+					       &original_derivative_[0],
+					       &step_limiter[0],
+					       &perturbed_state_[0],
+					       &perturbed_derivative_[0],
+					       &jacobian[jacobian_column_sum_[soot_col_id]]);
     }
-    GetJacobianColumnFromPerturbationLimiter(soot_col_id,
-					     d_soot,
-					     reactor_time,
-					     &original_state_[0],
-					     &original_derivative_[0],
-					     &step_limiter[0],
-					     &perturbed_state_[0],
-					     &perturbed_derivative_[0],
-					     &jacobian[jacobian_column_sum_[soot_col_id]]);
-  }
+  } // UseSectional()
   
   // Momentum
   jacobian[jacobian_column_sum_[num_species+2]] = 0.0;

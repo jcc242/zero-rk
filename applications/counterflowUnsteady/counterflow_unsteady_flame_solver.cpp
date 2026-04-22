@@ -432,7 +432,6 @@ int main(int argc, char *argv[])
 			   flame_params);
         SootOutput(flame_params,&flame_state_ptr[0]);
       }
-	flame_params.reactor_->FinalizeSectionalSoot();
 
     } else {
       printf("# ERROR: In time marching loop,\n");
@@ -441,6 +440,9 @@ int main(int argc, char *argv[])
       break;
     }
 
+  }
+  if(flame_params.parser_->use_sectional_library()) {
+    flame_params.reactor_->FinalizeSectionalSoot();
   }
   loop_time = getHighResolutionTime() - clock_time;
 
