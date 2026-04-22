@@ -493,20 +493,10 @@ int ConstPressureFlameLocal(long int nlocal,
       return transport_error;
     }
 
-    double relative_volume_midpoint = 0.5*(params->y_ext_[jext*num_states+num_species]
-					   + params->y_ext_[(jext-1)*num_states+num_species]);
-
-    double density_midpoint = 1.0/relative_volume_midpoint;
-
-    // Thermophoretic velocity
-    for(int k=0; k<total_soot_vars; ++k) {
-      double soot_value_midpoint = 0.5*(params->y_ext_[jext*num_states+soot_idx_start_+k]
-					+ params->y_ext_[(jext-1)*num_states+soot_idx_start_+k]);
-      params->soot_thermophoretic_coefficients_[j] =
-	-density_midpoint*soot_value_midpoint* // rho*Y_{s,i}
-	params->thermophoretic_const_*params->mixture_viscosity_[j]*relative_volume_midpoint; // Cth*mu/rho. 
-      // Note: gradient of temperature multiplied in later
-    }
+    // Section-independent thermophoretic velocity
+    params->soot_thermophoretic_coefficients_[j] =
+      -params->thermophoretic_const_*params->mixture_viscosity_[j]
+      / params->transport_input_.temperature_; // Cth*mu/T  (densities cancel out)
 
   } // for j<num_local_points+1
 
@@ -667,6 +657,22 @@ int ConstPressureFlameLocal(long int nlocal,
     }
 
     for(int k=0; k<total_soot_vars; ++k) {
+      // Soot values at the midpoints
+      double soot_jp1 = 0.5*(params->y_ext_[(jext+1)*num_states+soot_idx_start_+k]
+			     + params->y_ext_[(jext)*num_states+soot_idx_start_+k]);
+      double soot_j   = 0.5*(params->y_ext_[jext*num_states+soot_idx_start_+k]
+			     + params->y_ext_[(jext-1)*num_states+soot_idx_start_+k]);
+
+      double flux_jp1 = soot_jp1 * params->soot_thermophoretic_coefficients_[j+1] // Y_{s,l}*rho*-Cth*mu/rho/T
+	* inv_dz[jext+1] * ref_temperature
+	* (params->y_ext_[(jext+1)*num_states+num_species+1] -
+	   params->y_ext_[jext*num_states+num_species+1]); // dT/dx
+
+      double flux_j   = soot_j * params->soot_thermophoretic_coefficients_[j] // Y_{s,l}*rho*-Cth*mu/rho/T
+	* inv_dz[jext] * ref_temperature
+	* (params->y_ext_[jext*num_states+num_species+1] -
+	   params->y_ext_[(jext-1)*num_states+num_species+1]); // dT/dx
+
       // Soot convection term
       rhs_conv[j*num_states + soot_idx_start_ + k] -= relative_volume_j*
 	(a*params->y_ext_[(jext+2)*num_states + soot_idx_start_ + k] +
@@ -676,12 +682,7 @@ int ConstPressureFlameLocal(long int nlocal,
 	 e*params->y_ext_[(jext-2)*num_states + soot_idx_start_ + k]);
       // Soot thermophoretic term
       rhs_diff[j*num_states + soot_idx_start_ + k] -= (relative_volume_j*inv_dzm[jext])*
-	(params->soot_thermophoretic_coefficients_[j+1]*inv_dz[jext+1]*
-	 (params->y_ext_[(jext+1)*num_states+num_species+1] -
-	  params->y_ext_[jext*num_states+num_species+1])
-	 -params->soot_thermophoretic_coefficients_[j]*inv_dz[jext]*
-	 (params->y_ext_[jext*num_states+num_species+1] -
-	  params->y_ext_[(jext-1)*num_states+num_species+1]));
+	(flux_jp1-flux_j);
 
       // We neglect soot diffusion for now
     }
