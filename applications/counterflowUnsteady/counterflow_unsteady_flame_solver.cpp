@@ -203,6 +203,18 @@ int main(int argc, char *argv[])
                           &flame_params);
   if(check_flag(&flag, "CVodeSetUserData", 1)) exit(-1);
 
+  // Set monitor function and frequency
+  if(flame_params.residual_verbosity_ > 0) {
+    int monitor_freq = flame_params.parser_->monitor_frequency(); // new parser param
+    if(monitor_freq <= 0) monitor_freq = 100; // default: every 100 steps
+
+    flag = CVodeSetMonitorFn(cvode_ptr, FlameMonitorFunction);
+    if(check_flag(&flag, "CVodeSetMonitorFn", 1)) exit(-1);
+
+    flag = CVodeSetMonitorFrequency(cvode_ptr, monitor_freq);
+    if(check_flag(&flag, "CVodeSetMonitorFrequency", 1)) exit(-1);
+  }
+
 #ifdef SUNDIALS2
   /* Setup the linear solver method */
   flag = CVSpgmr(cvode_ptr, PREC_LEFT, 5);

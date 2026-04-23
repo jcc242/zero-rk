@@ -687,6 +687,23 @@ int ConstPressureFlameLocal(long int nlocal,
     }
   } // for(int j=0; j<num_local_points; ++j) // loop computing rhs
 
+  // -------------------------------------------------------------------
+  // Store residual breakdown if requested by monitor
+  // -------------------------------------------------------------------
+  if(params->compute_residual_breakdown_) {
+    for(int j=0; j<num_local_points*num_states; ++j) {
+      params->monitor_rhs_chem_[j] = rhs_chem[j];
+      params->monitor_rhs_conv_[j] = rhs_conv[j];
+      params->monitor_rhs_diff_[j] = rhs_diff[j];
+    }
+    // Note: rhs_conv will be multiplied by mass_flux below,
+    // so store the final convective contribution instead
+    for(int j=0; j<num_local_points; ++j) {
+      for(int k=0; k<num_states; ++k) {
+	params->monitor_rhs_conv_[j*num_states+k] *= params->mass_flux_[j];
+      }
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Compute the rate of change of the relative volume using the ideal
@@ -894,6 +911,307 @@ int ConstPressureFlameLocal(long int nlocal,
 
   return 0;
 }
+
+
+int FlameMonitorFunction(void *cvode_mem, void *user_data)
+{
+  FlameParams *params = (FlameParams *)user_data;
+
+  if(params->residual_verbosity_ < 1) return -1;
+
+  const int num_local_points = params->num_local_points_;
+  const int num_states  = params->reactor_->GetNumStates();
+  const int num_species = params->reactor_->GetNumSpecies();
+  const int soot_idx_start = params->reactor_->GetSootIdxStart();
+  const int total_soot_vars = params->reactor_->GetNumSectionalTotal();
+  const int my_pe = params->my_pe_;
+  const long int num_local_states = num_local_points*num_states;
+  const long int total_states = num_local_points*num_states;
+  MPI_Comm comm = params->comm_;
+
+  N_Vector monitor_ydot_;
+
+  monitor_ydot_ = N_VNew_Parallel(comm, num_local_states, total_states);
+
+  // -------------------------------------------------------------------
+  // 1. Get CVODE integrator stats
+  // -------------------------------------------------------------------
+  long int nsteps, nfevals, nlinsetups, netfails;
+  int qlast, qcur;
+  realtype hinused, hlast, hcur, tcur;
+  CVodeGetIntegratorStats(cvode_mem, &nsteps, &nfevals, &nlinsetups,
+                          &netfails, &qlast, &qcur,
+                          &hinused, &hlast, &hcur, &tcur);
+
+  long int nniters, nncfails;
+  CVodeGetNonlinSolvStats(cvode_mem, &nniters, &nncfails);
+
+  // Compute deltas since last monitor call
+  long int delta_steps  = nsteps  - params->monitor_nsteps_prev_;
+  long int delta_fevals = nfevals - params->monitor_nfevals_prev_;
+  long int delta_nni    = nniters - params->monitor_nniters_prev_;
+  params->monitor_nsteps_prev_  = nsteps;
+  params->monitor_nfevals_prev_ = nfevals;
+  params->monitor_nniters_prev_ = nniters;
+
+  // -------------------------------------------------------------------
+  // 2. Get current state and evaluate RHS
+  // -------------------------------------------------------------------
+  N_Vector y_cur;
+  CVodeGetCurrentState(cvode_mem, &y_cur);
+
+  // Set flag so RHS stores chem/conv/diff breakdown
+  params->compute_residual_breakdown_ = true;
+  ConstPressureFlame(tcur, y_cur, monitor_ydot_, user_data);
+  params->compute_residual_breakdown_ = false;
+
+  double *ydot_ptr = NV_DATA_P(monitor_ydot_);
+
+  // -------------------------------------------------------------------
+  // 3. Compute grouped residual norms (local, then MPI reduce)
+  // -------------------------------------------------------------------
+
+  // Local L_inf for total ydot
+  double local_species_Linf = 0.0;
+  double local_soot_Linf    = 0.0;
+  double local_temp_Linf    = 0.0;
+  double local_rvol_Linf    = 0.0;
+  double local_mom_Linf     = 0.0;
+
+  // Local L_inf for sub-terms (chem, conv, diff)
+  double local_species_chem_Linf = 0.0, local_species_conv_Linf = 0.0, local_species_diff_Linf = 0.0;
+  double local_soot_chem_Linf = 0.0, local_soot_conv_Linf = 0.0, local_soot_diff_Linf = 0.0;
+
+  // Track which variable has the max residual
+  struct { double value; int index; } species_max_local, soot_max_local;
+  species_max_local.value = 0.0; species_max_local.index = 0;
+  soot_max_local.value    = 0.0; soot_max_local.index    = 0;
+
+  for(int j=0; j<num_local_points; ++j) {
+    // --- Species ---
+    for(int k=0; k<num_species; ++k) {
+      int idx = j*num_states + k;
+      double val = fabs(ydot_ptr[idx]);
+      if(val > local_species_Linf) local_species_Linf = val;
+      if(val > species_max_local.value) {
+        species_max_local.value = val;
+        species_max_local.index = k;  // species id (same across grid)
+      }
+      // Sub-terms
+      double vc = fabs(params->monitor_rhs_chem_[idx]);
+      double vv = fabs(params->monitor_rhs_conv_[idx]);
+      double vd = fabs(params->monitor_rhs_diff_[idx]);
+      if(vc > local_species_chem_Linf) local_species_chem_Linf = vc;
+      if(vv > local_species_conv_Linf) local_species_conv_Linf = vv;
+      if(vd > local_species_diff_Linf) local_species_diff_Linf = vd;
+    }
+
+    // --- Thermo/flow ---
+    double val_rvol = fabs(ydot_ptr[j*num_states + num_species]);
+    double val_temp = fabs(ydot_ptr[j*num_states + num_species + 1]);
+    double val_mom  = fabs(ydot_ptr[j*num_states + num_species + 2]);
+    if(val_rvol > local_rvol_Linf) local_rvol_Linf = val_rvol;
+    if(val_temp > local_temp_Linf) local_temp_Linf = val_temp;
+    if(val_mom  > local_mom_Linf)  local_mom_Linf  = val_mom;
+
+    // --- Soot sections ---
+    for(int k=0; k<total_soot_vars; ++k) {
+      int idx = j*num_states + soot_idx_start + k;
+      double val = fabs(ydot_ptr[idx]);
+      if(val > local_soot_Linf) local_soot_Linf = val;
+      if(val > soot_max_local.value) {
+        soot_max_local.value = val;
+        soot_max_local.index = k;
+      }
+      double vc = fabs(params->monitor_rhs_chem_[idx]);
+      double vv = fabs(params->monitor_rhs_conv_[idx]);
+      double vd = fabs(params->monitor_rhs_diff_[idx]);
+      if(vc > local_soot_chem_Linf) local_soot_chem_Linf = vc;
+      if(vv > local_soot_conv_Linf) local_soot_conv_Linf = vv;
+      if(vd > local_soot_diff_Linf) local_soot_diff_Linf = vd;
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // 4. MPI reductions for global norms
+  // -------------------------------------------------------------------
+  double global_species_Linf, global_soot_Linf;
+  double global_temp_Linf, global_rvol_Linf, global_mom_Linf;
+  double global_species_chem, global_species_conv, global_species_diff;
+  double global_soot_chem, global_soot_conv, global_soot_diff;
+
+  MPI_Allreduce(&local_species_Linf, &global_species_Linf, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_soot_Linf, &global_soot_Linf, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_temp_Linf, &global_temp_Linf, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_rvol_Linf, &global_rvol_Linf, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_mom_Linf, &global_mom_Linf, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+
+  MPI_Allreduce(&local_species_chem_Linf, &global_species_chem, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_species_conv_Linf, &global_species_conv, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_species_diff_Linf, &global_species_diff, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_soot_chem_Linf, &global_soot_chem, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_soot_conv_Linf, &global_soot_conv, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+  MPI_Allreduce(&local_soot_diff_Linf, &global_soot_diff, 1,
+                MPI_DOUBLE, MPI_MAX, comm);
+
+  // Global max variable IDs (use MAXLOC)
+  struct { double value; int index; } species_max_global, soot_max_global;
+  MPI_Allreduce(&species_max_local, &species_max_global, 1,
+                MPI_DOUBLE_INT, MPI_MAXLOC, comm);
+  MPI_Allreduce(&soot_max_local, &soot_max_global, 1,
+                MPI_DOUBLE_INT, MPI_MAXLOC, comm);
+  // -------------------------------------------------------------------
+  // 5. Print (rank 0 only)
+  // -------------------------------------------------------------------
+  if(my_pe == 0 && params->monitor_file_ != NULL) {
+    FILE *mf = params->monitor_file_;
+    
+    // Solver stats
+    fprintf(mf, "# MONITOR t=%12.5e  steps=%ld(+%ld)  hcur=%10.3e  q=%d  "
+	    "fevals=%ld(+%ld)  nni=%ld(+%ld)  netf=%ld  nncf=%ld\n",
+	    tcur, nsteps, delta_steps, hcur, qcur,
+	    nfevals, delta_fevals, nniters, delta_nni,
+	    netfails, nncfails);
+
+    // Grouped residual norms
+    fprintf(mf, "# RESIDUAL Linf:  species=%10.3e (%s)"
+	    "  soot=%10.3e (bin%d)"
+	    "  T=%10.3e  rvol=%10.3e  mom=%10.3e\n",
+	    global_species_Linf,
+	    params->reactor_->GetNameOfStateId(species_max_global.index),
+	    global_soot_Linf,
+	    soot_max_global.index,
+	    global_temp_Linf,
+	    global_rvol_Linf,
+	    global_mom_Linf);
+
+    // Sub-term breakdown for species
+    fprintf(mf, "# SPECIES breakdown:  chem=%10.3e  conv=%10.3e  diff=%10.3e\n",
+	    global_species_chem,
+	    global_species_conv,
+	    global_species_diff);
+
+    // Sub-term breakdown for soot
+    if(total_soot_vars > 0) {
+      fprintf(mf, "# SOOT    breakdown:  chem=%10.3e  conv=%10.3e  diff=%10.3e\n",
+	      global_soot_chem,
+	      global_soot_conv,
+	      global_soot_diff);
+
+      // Ratio of soot to species residuals
+      double ratio = (global_species_Linf > 1.0e-300) ?
+	global_soot_Linf / global_species_Linf : 0.0;
+      fprintf(mf,"# STIFFNESS soot/species ratio=%10.3e\n", ratio);
+    }
+
+    // -------------------------------------------------------------------
+    // Verbosity level 2: per-variable detail
+    // -------------------------------------------------------------------
+    if(params->residual_verbosity_ >= 2) {
+
+      fprintf(mf, "# --- Per-species residual Linf ---\n");
+
+      // Need to gather per-species Linf across MPI ranks
+      // Allocate temporary arrays
+      std::vector<double> local_per_species(num_species, 0.0);
+      std::vector<double> global_per_species(num_species, 0.0);
+      std::vector<double> local_per_soot(total_soot_vars, 0.0);
+      std::vector<double> global_per_soot(total_soot_vars, 0.0);
+
+      for(int j=0; j<num_local_points; ++j) {
+        for(int k=0; k<num_species; ++k) {
+          double val = fabs(ydot_ptr[j*num_states + k]);
+          if(val > local_per_species[k]) local_per_species[k] = val;
+        }
+        for(int k=0; k<total_soot_vars; ++k) {
+          double val = fabs(ydot_ptr[j*num_states + soot_idx_start + k]);
+          if(val > local_per_soot[k]) local_per_soot[k] = val;
+        }
+      }
+
+      MPI_Reduce(&local_per_species[0], &global_per_species[0],
+                 num_species, MPI_DOUBLE, MPI_MAX, 0, comm);
+
+      if(total_soot_vars > 0) {
+        MPI_Reduce(&local_per_soot[0], &global_per_soot[0],
+                   total_soot_vars, MPI_DOUBLE, MPI_MAX, 0, comm);
+      }
+
+      // Print top 10 species by residual magnitude
+      // Build index-value pairs and partial sort
+      std::vector<std::pair<double,int>> species_ranked(num_species);
+      for(int k=0; k<num_species; ++k) {
+        species_ranked[k] = std::make_pair(global_per_species[k], k);
+      }
+      std::partial_sort(species_ranked.begin(),
+                        species_ranked.begin() + std::min(10, num_species),
+                        species_ranked.end(),
+                        std::greater<std::pair<double,int>>());
+
+      fprintf(mf,"# Top 10 species residuals:\n");
+      for(int i=0; i<std::min(10, num_species); ++i) {
+	fprintf(mf,"#   %3d  %10.3e  %s\n",
+		i+1,
+		species_ranked[i].first,
+		params->reactor_->GetNameOfStateId(species_ranked[i].second));
+      }
+
+      // Print top 10 soot sections by residual magnitude
+      if(total_soot_vars > 0) {
+        std::vector<std::pair<double,int>> soot_ranked(total_soot_vars);
+        for(int k=0; k<total_soot_vars; ++k) {
+          soot_ranked[k] = std::make_pair(global_per_soot[k], k);
+        }
+        std::partial_sort(soot_ranked.begin(),
+                          soot_ranked.begin() + std::min(10, total_soot_vars),
+                          soot_ranked.end(),
+                          std::greater<std::pair<double,int>>());
+
+	fprintf(mf, "# Top 10 soot section residuals:\n");
+	for(int i=0; i<std::min(10, total_soot_vars); ++i) {
+	  fprintf(mf, "#   %3d  %10.3e  %s\n",
+		  i+1,
+		  soot_ranked[i].first,
+		  params->reactor_->GetNameOfStateId(soot_idx_start + soot_ranked[i].second));
+	}
+      }
+
+    } // verbosity >= 2
+
+    fflush(mf);
+
+  } // my_pe == 0
+
+  // -------------------------------------------------------------------
+  // 6. Store norms on params for external access (all ranks)
+  // -------------------------------------------------------------------
+  params->species_residual_Linf_ = global_species_Linf;
+  params->soot_residual_Linf_    = global_soot_Linf;
+  params->thermo_residual_Linf_  = global_temp_Linf;
+  params->species_chem_Linf_     = global_species_chem;
+  params->species_conv_Linf_     = global_species_conv;
+  params->species_diff_Linf_     = global_species_diff;
+  params->soot_chem_Linf_        = global_soot_chem;
+  params->soot_conv_Linf_        = global_soot_conv;
+  params->soot_diff_Linf_        = global_soot_diff;
+
+  // Clean up the vector we initialized above
+  if(monitor_ydot_ != NULL) {
+    N_VDestroy_Parallel(monitor_ydot_);
+  }
+  return 0;
+} // FlameMonitorFunction
+
 
 #if defined SUNDIALS2
 int ReactorPreconditionerChemistrySetup(realtype t,      // [in] ODE system time

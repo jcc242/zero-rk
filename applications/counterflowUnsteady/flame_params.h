@@ -137,6 +137,31 @@ class FlameParams
   std::vector<double>  reactor_jacobian_;
   std::vector<double>  saved_jacobian_;
 
+
+  // DEBUGGING and monitoring member data
+  int residual_verbosity_; // 0=off, 1=grouped, 2=per-variable
+  long int monitor_nsteps_prev_;       // Previous step count for delta
+  long int monitor_nfevals_prev_;      // Previous RHS eval count for delta
+  long int monitor_nniters_prev_;      // Previous nonlinear iterations
+
+  // Residual breakdown flag and storage
+  bool compute_residual_breakdown_;
+  std::vector<double> monitor_rhs_chem_;  // num_local_points * num_states
+  std::vector<double> monitor_rhs_conv_;
+  std::vector<double> monitor_rhs_diff_;
+
+  double species_residual_Linf_;
+  double soot_residual_Linf_;
+  double thermo_residual_Linf_;
+  double species_chem_Linf_;
+  double species_conv_Linf_;
+  double species_diff_Linf_;
+  double soot_chem_Linf_;
+  double soot_conv_Linf_;
+  double soot_diff_Linf_;
+
+  FILE *monitor_file_;
+
  private:
   void SetInlet();
   void SetGrid();

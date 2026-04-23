@@ -440,6 +440,24 @@ spify_parser_params.append(
 }
 )
 
+spify_parser_params.append(
+{
+    'name':'residual_verbosity',
+    'type':'int',
+    'longDesc' : "Set amount of residual to view. 0=off, 1=grouped into species, thermo, and soot, 3=per-variable",
+    'defaultValue' : 0
+}
+)
+
+spify_parser_params.append(
+{
+    'name':'monitor_frequency',
+    'type':'int',
+    'longDesc' : "Number of steps between monitor calls",
+    'defaultValue' : 100
+}
+)
+
 #Generate parser code
 spg().generate(spify_parser_name,spify_parser_params)
 

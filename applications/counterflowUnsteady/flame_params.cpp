@@ -95,6 +95,7 @@ FlameParams::FlameParams(const std::string &input_name, MPI_Comm &comm)
     exit(-1);
   }
 
+
   // Set inlet values
   SetInlet();
   // Set grid
@@ -104,6 +105,34 @@ FlameParams::FlameParams(const std::string &input_name, MPI_Comm &comm)
 
   logger_->FFlush();
 
+  // Set debug values
+  residual_verbosity_ = parser_->residual_verbosity(); // new parser field
+  monitor_nsteps_prev_ = 0;
+  monitor_nfevals_prev_ = 0;
+  monitor_nniters_prev_ = 0;
+  compute_residual_breakdown_ = false;
+  monitor_file_ = NULL;
+  if(residual_verbosity_ > 0 && my_pe_ == 0) {
+    monitor_file_ = fopen("residual_monitor.txt", "w");
+    if(monitor_file_ == NULL) {
+      printf("# WARNING: Could not open residual_monitor.txt for writing\n");
+    } else {
+      // Write header
+      fprintf(monitor_file_,
+	      "# Residual monitor output\n"
+	      "# Column legend:\n"
+	      "#   t              : simulation time [s]\n"
+	      "#   steps(+delta)  : cumulative CVODE steps (increment since last)\n"
+	      "#   hcur           : current internal dt [s]\n"
+	      "#   q              : current BDF order\n"
+	      "#   fevals(+delta) : cumulative RHS evals (increment since last)\n"
+	      "#   nni(+delta)    : cumulative nonlinear iters (increment since last)\n"
+	      "#   netf           : cumulative error test failures\n"
+	      "#   nncf           : cumulative nonlinear convergence failures\n"
+	      "#\n");
+      fflush(monitor_file_);
+    }
+  }
 
 }
 
@@ -137,6 +166,10 @@ FlameParams::~FlameParams()
     if(sparse_matrix_[j] != NULL) {
       delete sparse_matrix_[j];
     }
+  }
+  if(monitor_file_ != NULL) {
+    fclose(monitor_file_);
+    monitor_file_ = NULL;
   }
 }
 
@@ -830,6 +863,16 @@ void FlameParams::SetMemory()
     //       mechanisms and grids
     saved_jacobian_.assign(num_nonzeros*num_reactors, 0.0);
   }
+
+  // Set debugging arrays
+  if(parser_->residual_verbosity() > 0) {
+    int nlp = num_local_points_;
+    int ns = reactor_->GetNumStates();
+    monitor_rhs_chem_.assign(nlp * ns, 0.0);
+    monitor_rhs_conv_.assign(nlp * ns, 0.0);
+    monitor_rhs_diff_.assign(nlp * ns, 0.0);
+  }
+
 
 }
 

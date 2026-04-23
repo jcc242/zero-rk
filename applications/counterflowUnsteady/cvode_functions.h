@@ -20,6 +20,10 @@ int ConstPressureFlameLocal(long int nlocal,
 			    N_Vector ydot,
 			    void *user_data);
 
+
+// For debugging output
+int FlameMonitorFunction(void *cvode_mem, void *user_data);
+
 #if defined SUNDIALS2
 int ReactorPreconditionerChemistrySetup(realtype t,// [in] ODE system time
                                         N_Vector y,      // [in] ODE state vector
