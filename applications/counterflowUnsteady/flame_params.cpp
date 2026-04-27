@@ -110,6 +110,7 @@ FlameParams::FlameParams(const std::string &input_name, MPI_Comm &comm)
   monitor_nsteps_prev_ = 0;
   monitor_nfevals_prev_ = 0;
   monitor_nniters_prev_ = 0;
+  monitor_nli_prev_ = 0;
   compute_residual_breakdown_ = false;
   monitor_file_ = NULL;
   if(residual_verbosity_ > 0 && my_pe_ == 0) {

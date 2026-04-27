@@ -98,9 +98,9 @@ int ConstPressureFlameLocal(long int nlocal,
   for(int j=0; j<num_local_points; ++j) {
     params->reactor_->SetViscosity(params->mixture_viscosity_[j]);
     params->reactor_->GetTimeDerivativeLimiter(t,
-                                               &y_ptr[j*num_states],
-                                               &params->step_limiter_[0],
-                                               &rhs_chem[j*num_states]);
+					       &y_ptr[j*num_states],
+					       &params->step_limiter_[0],
+					       &rhs_chem[j*num_states]);
   }
 
   //--------------------------------------------------------------------------
@@ -682,7 +682,6 @@ int ConstPressureFlameLocal(long int nlocal,
       // Soot thermophoretic term
       rhs_diff[j*num_states + soot_idx_start_ + k] -= (relative_volume_j*inv_dzm[jext])*
 	(flux_jp1-flux_j);
-
       // We neglect soot diffusion for now
     }
   } // for(int j=0; j<num_local_points; ++j) // loop computing rhs
@@ -926,7 +925,7 @@ int FlameMonitorFunction(void *cvode_mem, void *user_data)
   const int total_soot_vars = params->reactor_->GetNumSectionalTotal();
   const int my_pe = params->my_pe_;
   const long int num_local_states = num_local_points*num_states;
-  const long int total_states = num_local_points*num_states;
+  const long int total_states = (long int)params->z_.size()*num_states;
   MPI_Comm comm = params->comm_;
 
   N_Vector monitor_ydot_;
@@ -1032,6 +1031,178 @@ int FlameMonitorFunction(void *cvode_mem, void *user_data)
     }
   }
 
+  
+  // Quick check on soot values
+  double *y_ptr;
+  CVodeGetCurrentState(cvode_mem, &y_cur);
+  y_ptr = NV_DATA_P(y_cur);
+
+  // Check soot state values
+    double local_soot_min =  1.0e+300;
+    double local_soot_max = -1.0e+300;
+    double local_soot_absmax = 0.0;
+    int local_min_bin = 0, local_max_bin = 0;
+    
+    for(int j=0; j<num_local_points; ++j) {
+      for(int k=0; k<total_soot_vars; ++k) {
+        double val = y_ptr[j*num_states + soot_idx_start + k];
+        if(val < local_soot_min) { local_soot_min = val; local_min_bin = k; }
+        if(val > local_soot_max) { local_soot_max = val; local_max_bin = k; }
+        if(fabs(val) > local_soot_absmax) local_soot_absmax = fabs(val);
+      }
+    }
+
+    double global_soot_min, global_soot_max, global_soot_absmax;
+    MPI_Allreduce(&local_soot_min, &global_soot_min, 1,
+                  MPI_DOUBLE, MPI_MIN, comm);
+    MPI_Allreduce(&local_soot_max, &global_soot_max, 1,
+                  MPI_DOUBLE, MPI_MAX, comm);
+    MPI_Allreduce(&local_soot_absmax, &global_soot_absmax, 1,
+                  MPI_DOUBLE, MPI_MAX, comm);
+  if(total_soot_vars == 0) {
+    global_soot_min = 0.0; global_soot_max = 0.0; global_soot_absmax = 0.0;
+  }
+
+  // Get soot process at peak soot location
+  // -------------------------------------------------------------------
+  // Soot process rate breakdown at peak soot grid point
+  // -------------------------------------------------------------------
+  if(total_soot_vars > 0) {
+    // Find local grid point with maximum soot
+    int j_max_soot = 0;
+    double max_soot_val = 0.0;
+    for(int j=0; j<num_local_points; ++j) {
+      for(int k=0; k<total_soot_vars; ++k) {
+        double val = fabs(y_ptr[j*num_states + soot_idx_start + k]);
+        if(val > max_soot_val) {
+          max_soot_val = val;
+          j_max_soot = j;
+        }
+      }
+    }
+
+    // Find global max and which rank owns it
+    struct { double value; int rank; } local_in, global_out;
+    local_in.value = max_soot_val;
+    local_in.rank  = my_pe;
+    MPI_Allreduce(&local_in, &global_out, 1, MPI_DOUBLE_INT, MPI_MAXLOC, comm);
+
+    // The rank that owns the peak soot point does the diagnostic
+    if(my_pe == global_out.rank) {
+      // Call GetTimeDerivativeLimiter on this specific grid point
+      // to populate the Fortran last_* arrays for this point
+      std::vector<double> temp_deriv(num_states, 0.0);
+      params->reactor_->GetTimeDerivativeLimiter(
+          0.0,  // time doesn't matter for chemistry
+          &y_ptr[j_max_soot * num_states],
+          &params->step_limiter_[0],
+          &temp_deriv[0]);
+
+      // Now retrieve the stored process rates from Fortran
+      int n_bins, n_spec;
+      std::vector<double> coag_rates(total_soot_vars);
+      std::vector<double> sg_rates(total_soot_vars);
+      std::vector<double> ox_rates(total_soot_vars);
+      std::vector<double> cond_rates(total_soot_vars);
+      double nuc_rate;
+      int num_soot_species = params->reactor_->GetNumSpecies();
+      std::vector<double> nuc_gas(num_soot_species);
+      std::vector<double> sg_gas(num_soot_species);
+      std::vector<double> ox_gas(num_soot_species);
+      std::vector<double> cond_gas(num_soot_species);
+
+      params->reactor_->GetLastSootRates(&coag_rates[0], &sg_rates[0], &ox_rates[0],
+					 &cond_rates[0], &nuc_rate,
+					 &nuc_gas[0], &sg_gas[0], &ox_gas[0], &cond_gas[0]);
+
+      // Send to rank 0 for printing if needed
+      // For simplicity, if this rank is also rank 0, print directly
+      // Otherwise, send to rank 0
+      // (For now, assume serial or that rank 0 has peak soot — 
+      //  add MPI_Send/Recv if needed for multi-rank)
+      if(my_pe == 0 && params->monitor_file_ != NULL) {
+        FILE *mf = params->monitor_file_;
+	    // DEBUG: check soot chemistry at one point
+
+
+        // Grid point info
+        fprintf(mf, "# SOOT PROCESS RATES at grid %d (peak soot Y=%10.3e):\n",
+                j_max_soot, max_soot_val);
+
+	fprintf(mf,"# SOOT CHEM DEBUG grid %d: bin0=%e bin1=%e\n",
+	       j_max_soot, params->monitor_rhs_chem_[j_max_soot*num_states + soot_idx_start + 0],
+	       params->monitor_rhs_chem_[j_max_soot*num_states + soot_idx_start + 1]);
+
+        // Nucleation (only bin0)
+        fprintf(mf, "#   Nucleation rate: %10.3e [#/m^3/s]\n", nuc_rate);
+
+        // Per-bin process rates (first 10 bins)
+        fprintf(mf, "#   bin   coagulation    surf_growth    oxidation      condensation   total\n");
+        for(int k=0; k<std::min(10, (int)total_soot_vars); ++k) {
+          double total = coag_rates[k] + sg_rates[k] + ox_rates[k] + cond_rates[k];
+          if(k == 0) total += nuc_rate;
+          fprintf(mf, "#   %3d   %12.4e   %12.4e   %12.4e   %12.4e   %12.4e\n",
+                  k, coag_rates[k], sg_rates[k], ox_rates[k], cond_rates[k], total);
+        }
+
+        // Gas-phase feedback (find largest contributors)
+        fprintf(mf, "#   Gas-phase feedback [kmol/m^3/s]:\n");
+        fprintf(mf, "#   species   nucleation     surf_growth    oxidation      condensation   total\n");
+
+        // Find top 5 species by total absolute feedback
+        std::vector<std::pair<double,int>> gas_ranked(num_soot_species);
+        for(int k=0; k<num_soot_species; ++k) {
+          double total_abs = fabs(nuc_gas[k]) + fabs(sg_gas[k])
+                           + fabs(ox_gas[k]) + fabs(cond_gas[k]);
+          gas_ranked[k] = std::make_pair(total_abs, k);
+        }
+        std::partial_sort(gas_ranked.begin(),
+                          gas_ranked.begin() + std::min(10, num_soot_species),
+                          gas_ranked.end(),
+                          std::greater<std::pair<double,int>>());
+
+        for(int i=0; i<std::min(10, num_soot_species); ++i) {
+          int k = gas_ranked[i].second;
+          double total = nuc_gas[k] + sg_gas[k] + ox_gas[k] + cond_gas[k];
+          fprintf(mf, "#   %-20s %12.4e   %12.4e   %12.4e   %12.4e   %12.4e\n",
+                  params->reactor_->GetNameOfStateId(k),
+                  nuc_gas[k], sg_gas[k], ox_gas[k], cond_gas[k], total);
+        }
+
+	long int nli;  // linear iterations
+	CVodeGetNumLinIters(cvode_mem, &nli);
+	long int delta_nli = nli - params->monitor_nli_prev_;
+	params->monitor_nli_prev_ = nli;
+
+	fprintf(mf, "# LINEAR: nli=%ld(+%ld)  nli/nni=%.1f\n",
+		nli, delta_nli, 
+		(double)delta_nli / (double)std::max(1L, delta_nni));
+
+        // Also print the gas state at this point for reference
+	fprintf(mf, "# DEBUG: total_soot_vars=%d  soot_idx_start=%d  num_states=%d\n",
+	       total_soot_vars, soot_idx_start, num_states);
+        fprintf(mf, "#   Gas state at peak soot: T=%10.3e K\n",
+                params->ref_temperature_ * y_ptr[j_max_soot*num_states + num_species + 1]);
+
+        // Print key species mass fractions
+        const char* key_species[] = {"MassFraction_C2H2", "MassFraction_A4",
+                                     "MassFraction_O2", "MassFraction_OH",
+                                     "MassFraction_H", "MassFraction_H2O"};
+        for(int i=0; i<6; ++i) {
+          int id = params->reactor_->GetIdOfState(key_species[i]);
+          if(id >= 0 && id < num_species) {
+            fprintf(mf, "#     %s = %10.3e\n",
+                    key_species[i], y_ptr[j_max_soot*num_states + id]);
+          }
+        }
+
+        fflush(mf);
+      }
+    } // if this rank owns peak soot
+  } // if total_soot_vars > 0
+
+
+  
   // -------------------------------------------------------------------
   // 4. MPI reductions for global norms
   // -------------------------------------------------------------------
@@ -1107,6 +1278,11 @@ int FlameMonitorFunction(void *cvode_mem, void *user_data)
 	      global_soot_chem,
 	      global_soot_conv,
 	      global_soot_diff);
+
+    if(my_pe == 0 && params->monitor_file_ != NULL) {
+      fprintf(mf, "# SOOT STATE:  min=%10.3e  max=%10.3e  absmax=%10.3e\n",
+              global_soot_min, global_soot_max, global_soot_absmax);
+    }
 
       // Ratio of soot to species residuals
       double ratio = (global_species_Linf > 1.0e-300) ?

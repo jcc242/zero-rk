@@ -63,6 +63,11 @@ class CounterflowReactor
   const char * GetReactorInfo() const;
   zerork::mechanism* GetMechanism();
 
+  ReactorError GetLastSootRates(double *coag, double *sg, double *ox,
+				double *cond, double *nuc,
+				double *nuc_gas, double *sg_gas,
+				double *ox_gas, double *cond_gas) const;
+
   // State variable name accessors. The state vector has the following names:
   //
   // state[id = 0] = "MassFraction_<first species name id = 0>"

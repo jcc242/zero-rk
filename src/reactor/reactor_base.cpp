@@ -201,7 +201,7 @@ ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
       sp_idx[4] = j;
     } else if (current_name == "H2O") {
       sp_idx[5] = j;
-    } else if (current_name == "A4") {
+    } else if (current_name == "PYRENE") {
       sp_idx[6] = j;
     } else if (current_name == "CO") {
       sp_idx[7] = j;
@@ -214,6 +214,7 @@ ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
   sootsec_initialize_sp_idx(num_species_, sp_idx.data(), &num_soot_secs_, &num_soot_psd_);
   soot_masses_.assign(num_soot_secs_*num_soot_psd_, 0.0);
   sootsec_mass_si(soot_masses_.data());
+
   return NONE;
 }
 
@@ -233,5 +234,17 @@ ReactorError ReactorBase::ComputeSootResidual(const std::vector<double>& species
   sootsec_compute_residual_si(species_conc.data(), current_soot_values.data(),
 			      temperature, pressure, density, viscosity,
 			      species_residual.data(), soot_residual.data());
+  return NONE;
+}
+
+ReactorError ReactorBase::GetLastSootRates(double *coag, double *sg, double *ox,
+					   double *cond, double *nuc,
+					   double *nuc_gas, double *sg_gas,
+					   double *ox_gas, double *cond_gas) const {
+
+  sootsec_last_rates(&coag[0], &sg[0], &ox[0],
+		     &cond[0], nuc,
+		     &nuc_gas[0], &sg_gas[0], &ox_gas[0], &cond_gas[0]);
+    
   return NONE;
 }

@@ -530,8 +530,11 @@ ReactorError
   if(UseSectional()) {
     // Soot section derivatives. We compute this first because it affects the
     // species derivative (via surface chemistry, nucleation, etc.)
+    const double min_number_density = 1.0e3;
     for(int j=0; j<total_soot_vars; ++j) {
       soot_values_[j] = density*state[soot_idx_start_ + j]/soot_sec_mass_[j];
+      // Ensure that soot is >= zero
+      soot_values_[j] = std::max(soot_values_[j], min_number_density);
     }
     ComputeSootResidual(concentrations_,
 			soot_values_,
@@ -708,6 +711,8 @@ int CounterflowReactor::Impl::BuildSparseJacobianArrays()
   const int num_steps   = mechanism_ptr->getNumSteps();
   const int num_sectional = GetNumSectionalTotal();
   int num_states  = num_species + 3; // relative volume/mass flux, temperature, momentum
+  std::cout << "Using finite separation? " << finite_separation_ << std::endl;
+  std::cout << "Num species?: " << num_species << std::endl;
   if(finite_separation_)
     num_states  = num_species + 4; // relative volume/mass flux, temperature, momentum, pstrain
 
@@ -1668,6 +1673,7 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
   //original_derivative_[num_species+3] = 0.0;
 
 
+
   // compute the temperature derivative row
   for(int j=0; j<num_species; ++j) {
     // j^th column
@@ -1720,6 +1726,23 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
   //         GetNameOfStateId(j));
   //}
 
+  if(UseSectional()) {
+    // Compute the FULL original derivative including soot
+    // (species analytical derivatives were already computed above,
+    //  but soot derivatives require calling GetTimeDerivativeLimiter)
+    GetTimeDerivativeLimiter(reactor_time,
+                             &original_state_[0],
+                             &step_limiter[0],
+                             &original_derivative_[0]);
+    // Note: this overwrites species derivatives with the version that
+    // includes species_residual_from_soot_. The analytical species
+    // Jacobian entries computed above do NOT include soot feedback,
+    // but the FD columns (rvol, T, soot) will now be correct for
+    // ALL rows including soot.
+  }
+
+
+  
   // perturb the relative volume
   d_relative_volume = original_state_[num_species]*perturb_factor;
   GetJacobianColumnFromPerturbationLimiter(num_species,
@@ -1745,12 +1768,17 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
 
 
   if(UseSectional()) {
+    const double target_number_density = 1.0e6;
+    const double relative_volume = original_state_[num_species];
     for(int j=0; j<num_sectional; ++j) {
       int soot_col_id = soot_idx_start + j;
       d_soot = original_state_[soot_col_id]*perturb_factor;
 
-      if(fabs(d_soot) < 1.0e-30) {
-	d_soot = 1.0e-30;
+      // Adjust the minimum perturbation based on mass in bin:
+      double d_soot_min = target_number_density * soot_sec_mass_[j] * relative_volume;
+
+      if(fabs(d_soot) < d_soot_min) { // Changed from 1.0e-8, also formerly 1.0e-30
+	d_soot = d_soot_min;
       }
       GetJacobianColumnFromPerturbationLimiter(soot_col_id,
 					       d_soot,
@@ -2246,4 +2274,15 @@ double CounterflowReactor::GetGasConstant() const
 void CounterflowReactor::FinalizeSectionalSoot() const
 {
   impl_->FinalizeSectionalSoot();
+}
+
+ReactorError CounterflowReactor::GetLastSootRates(double *coag, double *sg, double *ox,
+						  double *cond, double *nuc,
+						  double *nuc_gas, double *sg_gas,
+						  double *ox_gas, double *cond_gas) const {
+
+  return impl_->GetLastSootRates(coag, sg, ox,
+				 cond, nuc,
+				 nuc_gas, sg_gas,
+				 ox_gas, cond_gas);
 }

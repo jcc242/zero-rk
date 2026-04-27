@@ -458,6 +458,15 @@ spify_parser_params.append(
 }
 )
 
+spify_parser_params.append(
+{
+    'name':'soot_abs_tol',
+    'type':'double',
+    'shortDesc' : "Absolute tolerance for soot",
+    'defaultValue' : 1.0e18
+}
+)
+
 #Generate parser code
 spg().generate(spify_parser_name,spify_parser_params)
 

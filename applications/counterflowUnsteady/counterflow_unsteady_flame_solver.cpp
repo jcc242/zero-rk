@@ -191,12 +191,51 @@ int main(int argc, char *argv[])
                  flame_state);
   if (check_flag(&flag, "CVodeInit", 1)) exit(-1);
 
-  /* Call CVodeSStolerances to specify the scalar relative tolerance
-   * and scalar absolute tolerances */
-  flag = CVodeSStolerances(cvode_ptr,
-                           flame_params.parser_->rel_tol(),
-                           flame_params.parser_->abs_tol());
-  if (check_flag(&flag, "CVodeSStolerances", 1)) exit(-1);
+  if(flame_params.parser_->use_sectional_library()) {
+    // If doing soot, we need per-component tolerances
+    const double rel_tol = flame_params.parser_->rel_tol();
+    const double abs_tol_species = flame_params.parser_->abs_tol();
+    const double abs_tol_soot = flame_params.parser_->soot_abs_tol();
+    const int total_soot_vars = flame_params.reactor_->GetNumSectionalTotal();
+    const int soot_idx_start = flame_params.reactor_->GetSootIdxStart();
+
+    N_Vector abs_tol_vec = N_VNew_Parallel(comm, num_local_states, total_states);
+    double *atol_ptr = NV_DATA_P(abs_tol_vec);
+
+    for(int j = 0; j < num_local_points; ++j) {
+      // Set species tolerances
+      for(int k=0; k<num_species; ++k) {
+	atol_ptr[j*num_states + k] = abs_tol_species;
+      }
+      // Relative volume
+      atol_ptr[j*num_states + num_species] = abs_tol_species;
+      // Temperature (nondimensional, ~O(1))
+      atol_ptr[j*num_states + num_species + 1] = abs_tol_species;
+      // Momentum
+      atol_ptr[j*num_states + num_species + 2] = abs_tol_species;
+      // PStrain (if finite separation)
+      if(flame_params.parser_->finite_separation()) {
+	atol_ptr[j*num_states + num_species + 3] = abs_tol_species;
+      }
+      // Soot sections
+      for(int k=0; k<total_soot_vars; ++k) {
+	atol_ptr[j*num_states + soot_idx_start + k] = abs_tol_soot;
+      }
+    }
+
+    flag = CVodeSVtolerances(cvode_ptr, rel_tol, abs_tol_vec);
+    if(check_flag(&flag, "CVodeSVtolerances", 1)) exit(-1);
+
+    N_VDestroy_Parallel(abs_tol_vec);  // CVODE makes an internal copy
+    
+  } else {
+    /* Call CVodeSStolerances to specify the scalar relative tolerance
+     * and scalar absolute tolerances */
+    flag = CVodeSStolerances(cvode_ptr,
+			     flame_params.parser_->rel_tol(),
+			     flame_params.parser_->abs_tol());
+    if (check_flag(&flag, "CVodeSStolerances", 1)) exit(-1);
+  }
 
   /* Set the pointer to user-defined data */
   flag = CVodeSetUserData(cvode_ptr,

@@ -159,6 +159,7 @@ class FlameParams
   double soot_chem_Linf_;
   double soot_conv_Linf_;
   double soot_diff_Linf_;
+  int monitor_nli_prev_;
 
   FILE *monitor_file_;
 
