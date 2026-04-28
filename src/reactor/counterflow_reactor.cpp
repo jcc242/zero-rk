@@ -112,6 +112,15 @@ class CounterflowReactor::Impl: public ReactorBase
 						double jacobian_column[]);
   int GetNetStoichiometry(const int species_id, const int step_id);
 
+  // Helper to find sparse positions of rvol and T rows within a
+  // species column, and count how many rows belong to species
+  // (i.e., have row_id < num_species).
+  void FindRvolTempPositions(const int col_start,
+                               const int num_nonzero_rows,
+                               int &rvol_pos,
+                               int &temp_pos,
+                               int &num_species_rows) const;
+
   double ref_temperature_;
   double inv_ref_temperature_;
   double pressure_;
@@ -164,6 +173,30 @@ class CounterflowReactor::Impl: public ReactorBase
   std::vector<double> soot_sec_mass_;
 
 };
+
+// Helper to find rvol/T positions and species row count in a column
+void CounterflowReactor::Impl::FindRvolTempPositions(
+						       const int col_start,
+						       const int num_nonzero_rows,
+						       int &rvol_pos,
+						       int &temp_pos,
+						       int &num_species_rows) const
+{
+  const int num_species = GetNumSpecies();
+  rvol_pos = -1;
+  temp_pos = -1;
+  num_species_rows = 0;
+  for(int k=0; k<num_nonzero_rows; ++k) {
+    int row_id = jacobian_row_id_[col_start + k];
+    if(row_id < num_species) {
+      num_species_rows = k + 1; // last species row seen so far
+    } else if(row_id == num_species) {
+      rvol_pos = col_start + k;
+    } else if(row_id == num_species + 1) {
+      temp_pos = col_start + k;
+    }
+  }
+}
 
 // Implementation of the pure member functions from the ReactorBase class
 CounterflowReactor::Impl::Impl(const char mechanism_name[],
@@ -1131,23 +1164,22 @@ ReactorError
   for(int j=0; j<num_species; ++j) {
     // j^th column
     int num_nonzero_rows = jacobian_column_sum_[j+1] - jacobian_column_sum_[j];
-    int sparse_id = jacobian_column_sum_[j];
+    int col_start = jacobian_column_sum_[j];
+    int rvol_pos, temp_pos, num_species_rows;
+    FindRvolTempPositions(col_start, num_nonzero_rows,
+                            rvol_pos, temp_pos, num_species_rows);
+
     double jacobian_sum = 0.0;
-
-    for(int k=0; k<(num_nonzero_rows-2); ++k) {
-
+    for(int k=0; k<num_species_rows; ++k) {
+      int sparse_id = col_start + k;
       int row_id = jacobian_row_id_[sparse_id];
       jacobian_sum +=
         enthalpies_[row_id]*jacobian[sparse_id]*inv_molecular_mass_[row_id];
-      ++sparse_id;
     }
-    // because of the dense row assumption (sparse_id) currently points at the
-    // relative_volume address for column j, and (sparse_id+1) currently
-    // points at the temperature address for column j
-    jacobian[sparse_id+1] = -jacobian_sum*temperature*inv_ref_temperature
-                            -original_derivative_[num_species+1]*
-                            specific_heats_[j]*inv_molecular_mass_[j];
-    jacobian[sparse_id+1] /= mix_mass_cp;
+    jacobian[temp_pos] = -jacobian_sum*temperature*inv_ref_temperature
+      -original_derivative_[num_species+1]*
+      specific_heats_[j]*inv_molecular_mass_[j];
+    jacobian[temp_pos] /= mix_mass_cp;
   }
 
   // compute the relative volume derivative row, note that it depends on
@@ -1155,20 +1187,19 @@ ReactorError
   for(int j=0; j<num_species; ++j) {
     // j^th column
     int num_nonzero_rows = jacobian_column_sum_[j+1] - jacobian_column_sum_[j];
-    int sparse_id = jacobian_column_sum_[j];
+    int col_start = jacobian_column_sum_[j];
+    int rvol_pos, temp_pos, num_species_rows;
+    FindRvolTempPositions(col_start, num_nonzero_rows,
+                            rvol_pos, temp_pos, num_species_rows);
+
     double jacobian_sum = 0.0;
-
-    for(int k=0; k<(num_nonzero_rows-2); ++k) { //-2 or -4
-
+    for(int k=0; k<num_species_rows; ++k) {
+      int sparse_id = col_start + k;
       int row_id = jacobian_row_id_[sparse_id];
       jacobian_sum += inv_molecular_mass_[row_id]*jacobian[sparse_id];
-      ++sparse_id;
     }
-    // because of the dense row assumption (sparse_id) currently points at the
-    // relative_volume address for column j, and (sparse_id+1) currently
-    // points at the temperature address for column j
-    jacobian[sparse_id] = (RuT/pressure)*jacobian_sum +
-      relative_volume*(ref_temperature/temperature)*jacobian[sparse_id+1];
+    jacobian[rvol_pos] = (RuT/pressure)*jacobian_sum +
+      relative_volume*(ref_temperature/temperature)*jacobian[temp_pos];
   }
   // [DEBUG]
   //for(int j=0; j<(num_species+2); ++j) {
@@ -1356,13 +1387,15 @@ ReactorError
   for(int j=0; j<num_species; ++j) {
     // j^th column
     int num_nonzero_rows = jacobian_column_sum_[j+1] - jacobian_column_sum_[j];
-    int sparse_id = jacobian_column_sum_[j];
+    int col_start = jacobian_column_sum_[j];
+    int rvol_pos, temp_pos, num_species_rows;
+    FindRvolTempPositions(col_start, num_nonzero_rows,
+                            rvol_pos, temp_pos, num_species_rows);
 
-    for(int k=0; k<(num_nonzero_rows-2); ++k) {
-
+    for(int k=0; k<num_species_rows; ++k) {
+      int sparse_id = col_start + k;
       int row_id = jacobian_row_id_[sparse_id];
       jacobian[sparse_id] *= molecular_mass_[row_id]*inv_molecular_mass_[j];
-      ++sparse_id;
     }
   }
 
@@ -1407,40 +1440,24 @@ ReactorError
   for(int j=0; j<num_species; ++j) {
     // j^th column
     int num_nonzero_rows = jacobian_column_sum_[j+1] - jacobian_column_sum_[j];
-    int sparse_id = jacobian_column_sum_[j];
+    int col_start = jacobian_column_sum_[j];
+    int rvol_pos, temp_pos, num_species_rows;
+    FindRvolTempPositions(col_start, num_nonzero_rows,
+                            rvol_pos, temp_pos, num_species_rows);
+
     double jacobian_sum = 0.0;
-
-    for(int k=0; k<(num_nonzero_rows-2); ++k) {
-
+    for(int k=0; k<num_species_rows; ++k) {
+      int sparse_id = col_start + k;
       int row_id = jacobian_row_id_[sparse_id];
       jacobian_sum +=
 	enthalpies_[row_id]*jacobian[sparse_id]*inv_molecular_mass_[row_id];
       ++sparse_id;
     }
-    // because of the dense row assumption (sparse_id) currently points at the
-    // mass_flux address for column j, and (sparse_id+1) currently
-    // points at the temperature address for column j
-    jacobian[sparse_id+1] = -jacobian_sum*temperature*inv_ref_temperature
-                            -original_derivative_[num_species+1]*
-                            specific_heats_[j]*inv_molecular_mass_[j];
-    jacobian[sparse_id+1] /= mix_mass_cp;
-
-    /*
-    // Tfix is a  flag set to True for one point in the domain where temperature is fixed
-    // to anchor the flame. At the point, the temperature residual is swapped with the mass_flux residual
-    if(!Tfix) { // Put in temperature row
-      jacobian[sparse_id+1] = -jacobian_sum*temperature*inv_ref_temperature
-	-original_derivative_[num_species+1]*
-	specific_heats_[j]*inv_molecular_mass_[j];
-      jacobian[sparse_id+1] /= mix_mass_cp;
-    } else { // Put in mass flux row
-      jacobian[sparse_id] = -jacobian_sum*temperature*inv_ref_temperature
-	-original_derivative_[num_species+1]*
-	specific_heats_[j]*inv_molecular_mass_[j];
-      jacobian[sparse_id] /= mix_mass_cp;
-    }
-    */
-
+    // Write to the correct T row position
+    jacobian[temp_pos] = -jacobian_sum*temperature*inv_ref_temperature
+      -original_derivative_[num_species+1]*
+      specific_heats_[j]*inv_molecular_mass_[j];
+    jacobian[temp_pos] /= mix_mass_cp;
   }
 
   // Compute the mass flux column
@@ -1620,13 +1637,15 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
   for(int j=0; j<num_species; ++j) {
     // j^th column
     int num_nonzero_rows = jacobian_column_sum_[j+1] - jacobian_column_sum_[j];
-    int sparse_id = jacobian_column_sum_[j];
+    int col_start = jacobian_column_sum_[j];
+    int rvol_pos, temp_pos, num_species_rows;
+    FindRvolTempPositions(col_start, num_nonzero_rows,
+                            rvol_pos, temp_pos, num_species_rows);
 
-    for(int k=0; k<(num_nonzero_rows-2); ++k) { //-2 or -4
-
+    for(int k=0; k<num_species_rows; ++k) {
+      int sparse_id = col_start + k;
       int row_id = jacobian_row_id_[sparse_id];
       jacobian[sparse_id] *= molecular_mass_[row_id]*inv_molecular_mass_[j];
-      ++sparse_id;
     }
   }
 
@@ -1678,23 +1697,23 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
   for(int j=0; j<num_species; ++j) {
     // j^th column
     int num_nonzero_rows = jacobian_column_sum_[j+1] - jacobian_column_sum_[j];
-    int sparse_id = jacobian_column_sum_[j];
+    int col_start = jacobian_column_sum_[j];
+    int rvol_pos, temp_pos, num_species_rows;
+    FindRvolTempPositions(col_start, num_nonzero_rows,
+                            rvol_pos, temp_pos, num_species_rows);
+
     double jacobian_sum = 0.0;
-
-    for(int k=0; k<(num_nonzero_rows-2); ++k) { // -2 or -4
-
+    for(int k=0; k<num_species_rows; ++k) {
+      int sparse_id = col_start + k;
       int row_id = jacobian_row_id_[sparse_id];
       jacobian_sum +=
         enthalpies_[row_id]*jacobian[sparse_id]*inv_molecular_mass_[row_id];
-      ++sparse_id;
     }
-    // because of the dense row assumption (sparse_id) currently points at the
-    // relative_volume address for column j, and (sparse_id+1) currently
-    // points at the temperature address for column j
-    jacobian[sparse_id+1] = -jacobian_sum*temperature*inv_ref_temperature
-                            -original_derivative_[num_species+1]*
-                            specific_heats_[j]*inv_molecular_mass_[j];
-    jacobian[sparse_id+1] /= mix_mass_cp;
+    // Write to the correct T row position
+    jacobian[temp_pos] = -jacobian_sum*temperature*inv_ref_temperature
+      -original_derivative_[num_species+1]*
+      specific_heats_[j]*inv_molecular_mass_[j];
+    jacobian[temp_pos] /= mix_mass_cp;
   }
 
   // compute the relative volume derivative row, note that it depends on
@@ -1702,20 +1721,20 @@ CounterflowReactor::Impl::GetSparseJacobianLimiter(const double reactor_time,
   for(int j=0; j<num_species; ++j) {
     // j^th column
     int num_nonzero_rows = jacobian_column_sum_[j+1] - jacobian_column_sum_[j];
-    int sparse_id = jacobian_column_sum_[j];
+    int col_start = jacobian_column_sum_[j];
+    int rvol_pos, temp_pos, num_species_rows;
+    FindRvolTempPositions(col_start, num_nonzero_rows,
+                            rvol_pos, temp_pos, num_species_rows);
+
     double jacobian_sum = 0.0;
-
-    for(int k=0; k<(num_nonzero_rows-2); ++k) {
-
+    for(int k=0; k<num_species_rows; ++k) {
+      int sparse_id = col_start + k;
       int row_id = jacobian_row_id_[sparse_id];
       jacobian_sum += inv_molecular_mass_[row_id]*jacobian[sparse_id];
-      ++sparse_id;
     }
-    // because of the dense row assumption (sparse_id) currently points at the
-    // relative_volume address for column j, and (sparse_id+1) currently
-    // points at the temperature address for column j
-    jacobian[sparse_id] = (RuT/pressure)*jacobian_sum +
-      relative_volume*(ref_temperature/temperature)*jacobian[sparse_id+1];
+    // Write to the correct rvol row position
+    jacobian[rvol_pos] = (RuT/pressure)*jacobian_sum +
+      relative_volume*(ref_temperature/temperature)*jacobian[temp_pos];
   }
   // [DEBUG]
   //for(int j=0; j<(num_species+2); ++j) {
