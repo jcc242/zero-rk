@@ -959,7 +959,7 @@ int FlameMonitorFunction(void *cvode_mem, void *user_data)
   N_Vector y_cur;
   CVodeGetCurrentState(cvode_mem, &y_cur);
 
-  // Set flag so RHS stores chem/conv/diff breakdown
+  // Set flag so RHS stores chem/conv/diff breakkdown
   params->compute_residual_breakdown_ = true;
   ConstPressureFlame(tcur, y_cur, monitor_ydot_, user_data);
   params->compute_residual_breakdown_ = false;
@@ -1201,7 +1201,188 @@ int FlameMonitorFunction(void *cvode_mem, void *user_data)
     } // if this rank owns peak soot
   } // if total_soot_vars > 0
 
+  // -------------------------------------------------------------------
+  // SOOT PROCESS RATES: Write per-grid-point data for time-series plotting
+  // -------------------------------------------------------------------
+  if(total_soot_vars > 0) {
 
+    // Open file on first call (rank 0 only)
+    static FILE *soot_rates_file = NULL;
+    static bool soot_rates_header_written = false;
+
+    if(my_pe == 0 && soot_rates_file == NULL) {
+      soot_rates_file = fopen("soot_process_rates.dat", "w");
+      if(soot_rates_file == NULL) {
+        fprintf(stderr, "ERROR: Cannot open soot_process_rates.dat\n");
+      }
+    }
+
+    if(my_pe == 0 && soot_rates_file != NULL && !soot_rates_header_written) {
+      fprintf(soot_rates_file, "# Soot process rates per grid point per monitor call\n");
+      fprintf(soot_rates_file, "# Units: rates in [#/m^3/s]\n");
+      fprintf(soot_rates_file, "# NT = %d soot bins\n", total_soot_vars);
+      fprintf(soot_rates_file, "# num_grid_points = %d\n", (int)params->z_.size());
+      fprintf(soot_rates_file, "#\n");
+      fprintf(soot_rates_file, "# Column layout:\n");
+      fprintf(soot_rates_file, "#   1: time [s]\n");
+      fprintf(soot_rates_file, "#   2: grid index (global)\n");
+      fprintf(soot_rates_file, "#   3: z position [m]\n");
+      fprintf(soot_rates_file, "#   4: peak_svf_grid (global grid index of peak soot)\n");
+      fprintf(soot_rates_file, "#   5: nuc_rate [#/m^3/s]\n");
+      int col = 6;
+      fprintf(soot_rates_file, "#   %d-%d: coag_rates[0..%d]\n",
+              col, col + total_soot_vars - 1, total_soot_vars - 1);
+      col += total_soot_vars;
+      fprintf(soot_rates_file, "#   %d-%d: sg_rates[0..%d]\n",
+              col, col + total_soot_vars - 1, total_soot_vars - 1);
+      col += total_soot_vars;
+      fprintf(soot_rates_file, "#   %d-%d: ox_rates[0..%d]\n",
+              col, col + total_soot_vars - 1, total_soot_vars - 1);
+      col += total_soot_vars;
+      fprintf(soot_rates_file, "#   %d-%d: cond_rates[0..%d]\n",
+              col, col + total_soot_vars - 1, total_soot_vars - 1);
+      fprintf(soot_rates_file, "#   Total columns: %d\n", 5 + 4 * total_soot_vars);
+      fprintf(soot_rates_file, "#\n");
+      soot_rates_header_written = true;
+    }
+
+    // ------------------------------------------------------------------
+    // Each rank computes process rates for its local grid points
+    // ------------------------------------------------------------------
+    // Per grid point, we store: nuc_rate + 4*NT values = 1 + 4*NT doubles
+    const int vals_per_point = 1 + 4 * total_soot_vars;
+    std::vector<double> local_rates(num_local_points * vals_per_point, 0.0);
+
+    // Also find local peak SVF
+    int local_peak_grid = 0;
+    double local_peak_soot = 0.0;
+
+    {
+      std::vector<double> temp_deriv(num_states, 0.0);
+      std::vector<double> coag_rates(total_soot_vars);
+      std::vector<double> sg_rates(total_soot_vars);
+      std::vector<double> ox_rates(total_soot_vars);
+      std::vector<double> cond_rates(total_soot_vars);
+      double nuc_rate_local;
+      std::vector<double> nuc_gas(num_species);
+      std::vector<double> sg_gas(num_species);
+      std::vector<double> ox_gas(num_species);
+      std::vector<double> cond_gas(num_species);
+
+      for(int j = 0; j < num_local_points; ++j) {
+        // Check for peak SVF at this point
+        double soot_sum = 0.0;
+        for(int k = 0; k < total_soot_vars; ++k) {
+          soot_sum += y_ptr[j * num_states + soot_idx_start + k];
+        }
+        if(soot_sum > local_peak_soot) {
+          local_peak_soot = soot_sum;
+          local_peak_grid = params->npes_*0 + j;  // need global index — see below
+        }
+
+        // Evaluate chemistry to populate Fortran state
+        params->reactor_->GetTimeDerivativeLimiter(
+            0.0,
+            &y_ptr[j * num_states],
+            &params->step_limiter_[0],
+            &temp_deriv[0]);
+
+        // Retrieve process rates
+        params->reactor_->GetLastSootRates(
+            &coag_rates[0], &sg_rates[0], &ox_rates[0],
+            &cond_rates[0], &nuc_rate_local,
+            &nuc_gas[0], &sg_gas[0], &ox_gas[0], &cond_gas[0]);
+
+        // Pack into local_rates buffer
+        int offset = j * vals_per_point;
+        local_rates[offset] = nuc_rate_local;
+        for(int k = 0; k < total_soot_vars; ++k)
+          local_rates[offset + 1 + k] = coag_rates[k];
+        for(int k = 0; k < total_soot_vars; ++k)
+          local_rates[offset + 1 + total_soot_vars + k] = sg_rates[k];
+        for(int k = 0; k < total_soot_vars; ++k)
+          local_rates[offset + 1 + 2*total_soot_vars + k] = ox_rates[k];
+        for(int k = 0; k < total_soot_vars; ++k)
+          local_rates[offset + 1 + 3*total_soot_vars + k] = cond_rates[k];
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // Find global peak SVF grid index
+    // ------------------------------------------------------------------
+    // Convert local_peak_grid to global index
+    int global_grid_offset = 0;  // need cumulative sum of local points before this rank
+    int npes;
+    MPI_Comm_size(comm, &npes);
+    
+    // Compute global offset for this rank's grid points
+    std::vector<int> all_num_local(npes);
+    MPI_Allgather(&num_local_points, 1, MPI_INT,
+                  &all_num_local[0], 1, MPI_INT, comm);
+    for(int r = 0; r < my_pe; ++r) {
+      global_grid_offset += all_num_local[r];
+    }
+    int local_peak_global_idx = global_grid_offset + local_peak_grid;
+
+    // MPI_MAXLOC to find which rank has the global peak
+    struct { double value; int index; } peak_local, peak_global;
+    peak_local.value = local_peak_soot;
+    peak_local.index = local_peak_global_idx;
+    MPI_Allreduce(&peak_local, &peak_global, 1, MPI_DOUBLE_INT, MPI_MAXLOC, comm);
+    int j_peak_svf_global = peak_global.index;
+
+    // ------------------------------------------------------------------
+    // Gather all rates to rank 0
+    // ------------------------------------------------------------------
+    // Gather counts and displacements
+    std::vector<int> recvcounts(npes), displs(npes);
+    int sendcount = num_local_points * vals_per_point;
+    MPI_Gather(&sendcount, 1, MPI_INT, &recvcounts[0], 1, MPI_INT, 0, comm);
+
+    if(my_pe == 0) {
+      displs[0] = 0;
+      for(int r = 1; r < npes; ++r)
+        displs[r] = displs[r-1] + recvcounts[r-1];
+    }
+
+    int total_points = (int)params->z_.size();
+    std::vector<double> global_rates;
+    if(my_pe == 0) {
+      global_rates.resize(total_points * vals_per_point);
+    }
+
+    MPI_Gatherv(&local_rates[0], sendcount, MPI_DOUBLE,
+                my_pe == 0 ? &global_rates[0] : NULL,
+                &recvcounts[0], &displs[0], MPI_DOUBLE,
+                0, comm);
+
+    // ------------------------------------------------------------------
+    // Rank 0 writes all grid points
+    // ------------------------------------------------------------------
+    if(my_pe == 0 && soot_rates_file != NULL) {
+      for(int j = 0; j < total_points; ++j) {
+        int offset = j * vals_per_point;
+        double nuc_rate_j = global_rates[offset];
+
+        fprintf(soot_rates_file, "%16.8e %4d %12.6e %4d %14.6e",
+                tcur, j, params->z_[j], j_peak_svf_global, nuc_rate_j);
+
+        for(int k = 0; k < total_soot_vars; ++k)
+          fprintf(soot_rates_file, " %14.6e", global_rates[offset + 1 + k]);
+        for(int k = 0; k < total_soot_vars; ++k)
+          fprintf(soot_rates_file, " %14.6e", global_rates[offset + 1 + total_soot_vars + k]);
+        for(int k = 0; k < total_soot_vars; ++k)
+          fprintf(soot_rates_file, " %14.6e", global_rates[offset + 1 + 2*total_soot_vars + k]);
+        for(int k = 0; k < total_soot_vars; ++k)
+          fprintf(soot_rates_file, " %14.6e", global_rates[offset + 1 + 3*total_soot_vars + k]);
+
+        fprintf(soot_rates_file, "\n");
+      }
+
+      fprintf(soot_rates_file, "\n");
+      fflush(soot_rates_file);
+    }
+  } // soot process rates output
   
   // -------------------------------------------------------------------
   // 4. MPI reductions for global norms

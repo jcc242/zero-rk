@@ -184,7 +184,7 @@ ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
   num_soot_psd_ = 0;
   use_sectional_ = use_sectional;
   if (!use_sectional_) return NONE;
-  std::vector<int> sp_idx(10);
+  std::vector<int> sp_idx(20);
 
   for (int j=0; j<num_species_; ++j) {
     std::string current_name = std::string(mechanism_->getSpeciesName(j));
@@ -201,14 +201,34 @@ ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
       sp_idx[4] = j;
     } else if (current_name == "H2O") {
       sp_idx[5] = j;
-    } else if (current_name == "PYRENE") {
-      sp_idx[6] = j;
+    // } else if (current_name == "PYRENE") {
+    //   sp_idx[6] = j; // Not used at the moment!
     } else if (current_name == "CO") {
       sp_idx[7] = j;
     } else if (current_name == "O") {
       sp_idx[8] = j;
     } else if (current_name == "CO2") {
       sp_idx[9] = j;
+    } else if (current_name == "C4H2") {
+      sp_idx[10] = j;
+    } else if (current_name == "A4R5") {
+      sp_idx[11] = j;
+    } else if (current_name == "C6H6") {
+      sp_idx[12] = j;
+    } else if (current_name == "C6H5C2H") {
+      sp_idx[13] = j;
+    } else if (current_name == "NAPH") {
+      sp_idx[14] = j;
+    } else if (current_name == "A2R5") {
+      sp_idx[15] = j;
+    } else if (current_name == "ANTHRACENE") {
+      sp_idx[16] = j;
+    } else if (current_name == "PHNTHRN") {
+      sp_idx[17] = j;
+    } else if (current_name == "A3R5") {
+      sp_idx[18] = j;
+    } else if (current_name == "PYRENE") {
+      sp_idx[19] = j;
     }
   }
   sootsec_initialize_sp_idx(num_species_, sp_idx.data(), &num_soot_secs_, &num_soot_psd_);
@@ -234,6 +254,76 @@ ReactorError ReactorBase::ComputeSootResidual(const std::vector<double>& species
   sootsec_compute_residual_si(species_conc.data(), current_soot_values.data(),
 			      temperature, pressure, density, viscosity,
 			      species_residual.data(), soot_residual.data());
+
+  // // ================================================================
+  // // MASS CONSERVATION CHECK
+  // //
+  // // Gas side:  species_residual[i] in [kmol/(m^3*s)]
+  // //            mass rate = species_residual[i] * MW[i]  → [kg/(m^3*s)]
+  // //
+  // // Soot side: soot_residual[k] in [#/(m^3*s)]
+  // //            mass rate = soot_residual[k] * m_bin[k]  → [kg/(m^3*s)]
+  // //
+  // // Conservation: gas_mass_rate + soot_mass_rate = 0
+  // //   (mass leaving gas = mass entering soot)
+  // // ================================================================
+  // {
+  //   const int num_species = GetNumSpecies();
+  //   const int total_soot_vars = GetNumSectionalTotal();
+  //   const std::vector<double>& soot_sec_mass = GetSectionsMass(); // [kg/particle]
+
+  //   zerork::mechanism *mech = GetMechanism();
+  //   std::vector<double> mol_wt(num_species);
+  //   mech->getMolWtSpc(&mol_wt[0]);  // [kg/kmol]
+
+  //   // Gas-phase mass rate: Σ species_residual[i] * MW[i]  [kg/(m^3*s)]
+  //   double gas_mass_rate = 0.0;
+  //   for(int i = 0; i < num_species; ++i) {
+  //     gas_mass_rate += species_residual[i] * mol_wt[i];
+  //   }
+
+  //   // Soot mass rate: Σ soot_residual[k] * m_bin[k]  [kg/(m^3*s)]
+  //   double soot_mass_rate = 0.0;
+  //   for(int k = 0; k < total_soot_vars; ++k) {
+  //     soot_mass_rate += soot_residual[k] * soot_sec_mass[k];
+  //   }
+
+  //   double net_mass_rate = gas_mass_rate + soot_mass_rate;
+
+  //   // Compute scale for relative error
+  //   double scale = std::max(fabs(gas_mass_rate), fabs(soot_mass_rate));
+  //   double relative_error = (scale > 0.0) ? fabs(net_mass_rate) / scale : 0.0;
+
+  //   // Print if error exceeds threshold
+  //   if(relative_error > 1.0e-6 || fabs(net_mass_rate) > 1.0e-10) {
+  //     printf("# SOOT_MASS_CONSERV: gas_mass_rate=%12.4e  soot_mass_rate=%12.4e"
+  //            "  net=%12.4e  rel_err=%8.2e  T=%.1f K\n",
+  //            gas_mass_rate, soot_mass_rate, net_mass_rate, relative_error, temperature);
+
+  //     // Break down gas side by species to find where mass is leaking
+  //     if(relative_error > 1.0e-4) {
+  //       printf("# SOOT_MASS_CONSERV:   Gas breakdown (top contributors):\n");
+  //       for(int i = 0; i < num_species; ++i) {
+  //         double contribution = species_residual[i] * mol_wt[i];
+  //         if(fabs(contribution) > 0.01 * scale) {
+  //           printf("# SOOT_MASS_CONSERV:     species %3d: resid=%12.4e kmol/m3/s"
+  //                  "  mass_rate=%12.4e kg/m3/s  (MW=%.2f)\n",
+  //                  i, species_residual[i], contribution, mol_wt[i]);
+  //         }
+  //       }
+  //       printf("# SOOT_MASS_CONSERV:   Soot breakdown (top contributors):\n");
+  //       for(int k = 0; k < std::min(total_soot_vars, 10); ++k) {
+  //         double contribution = soot_residual[k] * soot_sec_mass[k];
+  //         if(fabs(contribution) > 0.01 * scale) {
+  //           printf("# SOOT_MASS_CONSERV:     bin %2d: resid=%12.4e #/m3/s"
+  //                  "  mass_rate=%12.4e kg/m3/s  (m_bin=%.4e kg)\n",
+  //                  k, soot_residual[k], contribution, soot_sec_mass[k]);
+  //         }
+  //       }
+  //     }
+  //   }
+  // }
+  
   return NONE;
 }
 

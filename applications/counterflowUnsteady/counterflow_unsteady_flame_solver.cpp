@@ -571,6 +571,7 @@ static void WriteFieldParallel(double t,
   char filename[32], *basename;
   bool dump_mole_fractions = params.parser_->write_mole_fractions_to_field_files();
   bool dump_step_rates = params.parser_->write_step_rates_to_field_files();
+  const int soot_idx_start = params.reactor_->GetSootIdxStart();
 
   int disp;
   std::vector<double> buffer(num_local_points+2, 0.0);
@@ -661,6 +662,8 @@ static void WriteFieldParallel(double t,
         buffer[0] = 0.0;
       } else if (j==num_species+3) {
         buffer[0] = params.P_left_*params.ref_momentum_;
+      } else if (j >= soot_idx_start && j < soot_idx_start + params.reactor_->GetNumSectionalTotal()) {
+        buffer[0] = 0.0;  // No soot at fuel inlet
       } else {
         if(params.flame_type_ == 0) {
           buffer[0] = params.fuel_mass_fractions_[j];
@@ -698,6 +701,8 @@ static void WriteFieldParallel(double t,
         }
       } else if (j==num_species+3) {
         buffer[num_local_points+offset] = params.P_right_*params.ref_momentum_;
+      } else if (j >= soot_idx_start && j < soot_idx_start + params.reactor_->GetNumSectionalTotal()) {
+	buffer[num_local_points+offset] = 0.0;  // No soot at oxidizer inlet
       } else {
         buffer[num_local_points+offset] = params.oxidizer_mass_fractions_[j];
       }
