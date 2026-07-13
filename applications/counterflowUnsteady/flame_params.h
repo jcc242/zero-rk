@@ -162,6 +162,7 @@ class FlameParams
   int monitor_nli_prev_;
 
   FILE *monitor_file_;
+  FILE *diffusion_monitor_file_;
 
  private:
   void SetInlet();

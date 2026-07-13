@@ -1609,6 +1609,118 @@ int FlameMonitorFunction(void *cvode_mem, void *user_data)
   } // my_pe == 0
 
   // -------------------------------------------------------------------
+  // SESC Brownian-diffusion diagnostic at the hottest grid point
+  //
+  // Called every FlameMonitorFunction invocation. Uses the face-property
+  // arrays (mixture_viscosity_, molecular_mass_mix_mid_) freshly populated
+  // by the ConstPressureFlame() call above. Records go to
+  // diffusion_monitor.txt (opened in FlameParams::FlameParams()).
+  // -------------------------------------------------------------------
+  if(total_soot_vars > 0 && params->diffusion_monitor_file_ != NULL) {
+    // Find local grid point with maximum temperature
+    int j_hot_local = 0;
+    double T_hot_local = -1.0;
+    for(int j=0; j<num_local_points; ++j) {
+      const double T_j =
+        params->ref_temperature_ * y_ptr[j*num_states + num_species + 1];
+      if(T_j > T_hot_local) {
+        T_hot_local = T_j;
+        j_hot_local = j;
+      }
+    }
+
+    // Find global hottest point and which rank owns it
+    struct { double value; int rank; } hot_local_in, hot_global_out;
+    hot_local_in.value = T_hot_local;
+    hot_local_in.rank  = my_pe;
+    MPI_Allreduce(&hot_local_in, &hot_global_out, 1, MPI_DOUBLE_INT,
+                  MPI_MAXLOC, comm);
+
+    // Buffer layout:
+    //   [0]=j_global (as double), [1]=T, [2]=p, [3]=mu, [4]=Wbar,
+    //   [5]=rho, [6]=lambda, then per-bin (d_p, Kn, Cc, D, rho*D)
+    const int header_slots  = 7;
+    const int per_bin_slots = 5;
+    std::vector<double> diag_buf(header_slots + per_bin_slots*total_soot_vars,
+                                 0.0);
+
+    if(my_pe == hot_global_out.rank) {
+      const int j = j_hot_local;
+      const int j_global = my_pe*num_local_points + j;
+
+      const double kB       = 1.380649e-23;
+      const double R_u      = params->reactor_->GetGasConstant();
+      const double pi_local = 4.0*atan(1.0);
+      const double cc_alpha = 1.165;
+      const double cc_beta  = 0.483;
+      const double cc_gamma = 0.997;
+
+      const double T_face   = params->ref_temperature_ *
+                              y_ptr[j*num_states + num_species + 1];
+      const double p_face   = params->transport_input_.pressure_;
+      const double mu_face  = params->mixture_viscosity_[j];
+      const double W_face   = params->molecular_mass_mix_mid_[j];
+      const double rho_face = p_face*W_face/(R_u*T_face);
+      const double mfp      =
+        (mu_face/p_face)*sqrt(pi_local*R_u*T_face/(2.0*W_face));
+      const double D_prefactor = kB*T_face/(3.0*pi_local*mu_face);
+
+      diag_buf[0] = (double)j_global;
+      diag_buf[1] = T_face;
+      diag_buf[2] = p_face;
+      diag_buf[3] = mu_face;
+      diag_buf[4] = W_face;
+      diag_buf[5] = rho_face;
+      diag_buf[6] = mfp;
+
+      const std::vector<double>& soot_bin_diameters =
+        params->reactor_->GetSectionsDiameter();
+      for(int k=0; k<total_soot_vars; ++k) {
+        const double dp   = soot_bin_diameters[k];
+        const double Kn   = 2.0*mfp/dp;
+        const double Cc   = 1.0 + Kn*(cc_alpha + cc_beta*exp(-cc_gamma/Kn));
+        const double D_k  = D_prefactor*Cc/dp;
+        const double rhoD = rho_face*D_k;
+        const int b       = header_slots + per_bin_slots*k;
+        diag_buf[b+0] = dp;
+        diag_buf[b+1] = Kn;
+        diag_buf[b+2] = Cc;
+        diag_buf[b+3] = D_k;
+        diag_buf[b+4] = rhoD;
+      }
+    }
+
+    // Broadcast to rank 0 so it can write the record
+    MPI_Bcast(&diag_buf[0], (int)diag_buf.size(), MPI_DOUBLE,
+              hot_global_out.rank, comm);
+
+    if(my_pe == 0) {
+      FILE *df = params->diffusion_monitor_file_;
+      fprintf(df,
+        "# t = %13.6e s   j_global = %5d   T = %10.4f K   p = %12.4e Pa\n",
+        tcur, (int)diag_buf[0], diag_buf[1], diag_buf[2]);
+      fprintf(df,
+        "#   mu = %12.4e Pa*s   Wbar = %8.4f kg/kmol   rho = %12.4e kg/m^3\n",
+        diag_buf[3], diag_buf[4], diag_buf[5]);
+      fprintf(df,
+        "#   lambda = %12.4e m (%8.2f nm)\n",
+        diag_buf[6], diag_buf[6]*1.0e9);
+      fprintf(df,
+        "#   bin       d_p[nm]           Kn            Cc"
+        "       D[m^2/s]     rho*D[kg/(m*s)]\n");
+      for(int k=0; k<total_soot_vars; ++k) {
+        const int b = header_slots + per_bin_slots*k;
+        fprintf(df,
+          "  %5d   %12.4e   %12.4e   %12.4e   %12.4e   %12.4e\n",
+          k, diag_buf[b+0]*1.0e9, diag_buf[b+1], diag_buf[b+2],
+          diag_buf[b+3], diag_buf[b+4]);
+      }
+      fprintf(df, "#\n");
+      fflush(df);
+    }
+  }
+
+  // -------------------------------------------------------------------
   // 6. Store norms on params for external access (all ranks)
   // -------------------------------------------------------------------
   params->species_residual_Linf_ = global_species_Linf;

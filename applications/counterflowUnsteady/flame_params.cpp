@@ -135,6 +135,39 @@ FlameParams::FlameParams(const std::string &input_name, MPI_Comm &comm)
     }
   }
 
+  // SESC soot Brownian-diffusion monitor. Opened on rank 0 whenever soot is
+  // enabled, independent of residual_verbosity_. Written every call to
+  // FlameMonitorFunction, sampled at the hottest grid point of the flame.
+  diffusion_monitor_file_ = NULL;
+  if(my_pe_ == 0 && reactor_->GetNumSectionalTotal() > 0) {
+    diffusion_monitor_file_ = fopen("diffusion_monitor.txt", "w");
+    if(diffusion_monitor_file_ == NULL) {
+      printf("# WARNING: Could not open diffusion_monitor.txt for writing\n");
+    } else {
+      fprintf(diffusion_monitor_file_,
+	      "# SESC soot Brownian-diffusion monitor\n"
+	      "# Sampled at the hottest grid point of the flame every call to FlameMonitorFunction.\n"
+	      "# Cunningham slip coefficients (ISO 15900:2009): alpha=1.165 beta=0.483 gamma=0.997\n"
+	      "# Formulas:\n"
+	      "#   lambda = (mu/p)*sqrt(pi*R_u*T/(2*Wbar))                (Chapman-Enskog mean free path)\n"
+	      "#   Kn_k   = 2*lambda / d_p,k\n"
+	      "#   Cc(Kn) = 1 + Kn*[alpha + beta*exp(-gamma/Kn)]\n"
+	      "#   D_k    = k_B*T*Cc / (3*pi*mu*d_p,k)                    (Stokes-Einstein-Sutherland-Cunningham)\n"
+	      "# Header block per record:\n"
+	      "#   t              : simulation time [s]\n"
+	      "#   j_global       : global grid index of hottest point\n"
+	      "#   T              : temperature at hottest grid point [K]\n"
+	      "#   p              : pressure [Pa]\n"
+	      "#   mu             : mixture viscosity at upstream face [Pa*s]\n"
+	      "#   Wbar           : mixture molecular weight at upstream face [kg/kmol]\n"
+	      "#   rho            : gas density at upstream face [kg/m^3]\n"
+	      "#   lambda         : gas mean free path [m] (nm)\n"
+	      "# Per-bin columns: bin, d_p [nm], Kn, Cc, D [m^2/s], rho*D [kg/(m*s)]\n"
+	      "#\n");
+      fflush(diffusion_monitor_file_);
+    }
+  }
+
 }
 
 FlameParams::~FlameParams()
@@ -171,6 +204,10 @@ FlameParams::~FlameParams()
   if(monitor_file_ != NULL) {
     fclose(monitor_file_);
     monitor_file_ = NULL;
+  }
+  if(diffusion_monitor_file_ != NULL) {
+    fclose(diffusion_monitor_file_);
+    diffusion_monitor_file_ = NULL;
   }
 }
 
