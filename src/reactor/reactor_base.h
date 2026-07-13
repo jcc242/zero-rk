@@ -103,6 +103,9 @@ class ReactorBase
   {return num_soot_psd_*num_soot_secs_;}
   const std::vector<double>& GetSectionsMass() const
   {return soot_masses_;}
+  const std::vector<double>& GetSectionsDiameter() const
+  {return soot_diameters_;}
+  double GetSootMaterialDensity() const;
   ReactorError FinalizeSectionalSoot();
   ReactorError ComputeSootResidual(const std::vector<double>& species_conc,
 				   const std::vector<double>& current_soot_values,
@@ -144,6 +147,7 @@ class ReactorBase
   int num_soot_secs_;
   int num_soot_psd_;
   std::vector<double> soot_masses_;
+  std::vector<double> soot_diameters_;
 };
 
 

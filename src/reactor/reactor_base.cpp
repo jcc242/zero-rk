@@ -1,5 +1,8 @@
 #include "reactor_base.h"
 
+#include <cstdlib>
+#include <iostream>
+
 #include "section_soot.h"
 
 ReactorError ReactorBase::BuildMechanism(const char mechanism_name[],
@@ -234,6 +237,8 @@ ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
   sootsec_initialize_sp_idx(num_species_, sp_idx.data(), &num_soot_secs_, &num_soot_psd_);
   soot_masses_.assign(num_soot_secs_*num_soot_psd_, 0.0);
   sootsec_mass_si(soot_masses_.data());
+  soot_diameters_.assign(num_soot_secs_*num_soot_psd_, 0.0);
+  sootsec_diameters_si(soot_diameters_.data());
 
   return NONE;
 }
@@ -241,6 +246,19 @@ ReactorError ReactorBase::InitializeSectionalSoot(const bool use_sectional)
 ReactorError ReactorBase::FinalizeSectionalSoot() {
   sootsec_finalize();
   return NONE;
+}
+
+double ReactorBase::GetSootMaterialDensity() const {
+  double density = 0.0;
+  sootsec_density_si(&density);
+  if(density <= 0.0) {
+    std::cerr << "ERROR: ReactorBase::GetSootMaterialDensity() received a "
+              << "non-positive soot material density (" << density
+              << " kg/m^3). "
+              << "Aborting." << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  return density;
 }
 
 ReactorError ReactorBase::ComputeSootResidual(const std::vector<double>& species_conc,

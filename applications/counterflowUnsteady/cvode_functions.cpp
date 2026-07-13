@@ -497,6 +497,44 @@ int ConstPressureFlameLocal(long int nlocal,
       -params->thermophoretic_const_*params->mixture_viscosity_[j]
       / params->transport_input_.temperature_; // Cth*mu/T  (densities cancel out)
 
+    // ------------------------------------------------------------------
+    // SESC Brownian diffusion coefficients at face j, per soot bin.
+    //   D_soot,k = kB*T*Cc(Kn_k)/(3*pi*mu*d_p,k)                 (Stokes-Einstein)
+    //   Cc(Kn)  = 1 + Kn*[alpha + beta*exp(-gamma/Kn)]           (Cunningham slip)
+    //   Kn_k    = 2*lambda / d_p,k
+    //   lambda  = (mu/p)*sqrt(pi*R_u*T/(2*W))                    (Chapman-Enskog)
+    // Cunningham coefficients are from ISO 15900:2009.
+    // We store rho_face*D_soot,k so the interior diffusive flux is simply
+    //   J = -(rho*D)_face * dY/dx.
+    // ------------------------------------------------------------------
+    if(total_soot_vars > 0) {
+      const std::vector<double>& soot_bin_diameters =
+        params->reactor_->GetSectionsDiameter();
+      const double kB       = 1.380649e-23;                 // [J/K]
+      const double R_u      = params->reactor_->GetGasConstant();
+      const double pi_local = 4.0*atan(1.0);
+      // ISO 15900:2009 Cunningham slip-correction coefficients
+      const double cc_alpha = 1.165;
+      const double cc_beta  = 0.483;
+      const double cc_gamma = 0.997;
+      const double T_face   = params->transport_input_.temperature_;
+      const double p_face   = params->transport_input_.pressure_;
+      const double mu_face  = params->mixture_viscosity_[j];
+      const double W_face   = params->molecular_mass_mix_mid_[j];
+      const double rho_face = p_face*W_face/(R_u*T_face);
+      const double mfp      =
+        (mu_face/p_face)*sqrt(pi_local*R_u*T_face/(2.0*W_face));
+      const double D_prefactor = kB*T_face/(3.0*pi_local*mu_face);
+      for(int k=0; k<total_soot_vars; ++k) {
+        const double dp  = soot_bin_diameters[k];
+        const double Kn  = 2.0*mfp/dp;
+        const double Cc  = 1.0 + Kn*(cc_alpha + cc_beta*exp(-cc_gamma/Kn));
+        const double D_k = D_prefactor*Cc/dp;
+        params->soot_diffusion_coefficients_[j*total_soot_vars + k] =
+          rho_face*D_k;
+      }
+    }
+
   } // for j<num_local_points+1
 
   //--------------------------------------------------------------------------
@@ -682,7 +720,28 @@ int ConstPressureFlameLocal(long int nlocal,
       // Soot thermophoretic term
       rhs_diff[j*num_states + soot_idx_start_ + k] -= (relative_volume_j*inv_dzm[jext])*
 	(flux_jp1-flux_j);
-      // We neglect soot diffusion for now
+
+      // ------------------------------------------------------------------
+      // SESC Brownian diffusion (ISO 15900:2009 slip correction).
+      // soot_diffusion_coefficients_ stores rho_face*D_soot,k at each face.
+      // Fickian mass flux at face:  J = -rho*D * dY/dx.
+      // dY/dt contribution: rhs_diff -= rel_vol * inv_dzm * (J_right - J_left)
+      //                   =  rel_vol * div(rho*D*grad Y)
+      //                   =  (1/rho) * div(rho*D*grad Y)
+      // (same sign convention as species diffusion, cvode_functions.cpp:566-568)
+      // ------------------------------------------------------------------
+      const double rhoD_right =
+        params->soot_diffusion_coefficients_[(j+1)*total_soot_vars + k];
+      const double rhoD_left =
+        params->soot_diffusion_coefficients_[ j   *total_soot_vars + k];
+      const double diff_flux_right = -rhoD_right*inv_dz[jext+1]*
+        (params->y_ext_[(jext+1)*num_states + soot_idx_start_ + k]
+        -params->y_ext_[ jext   *num_states + soot_idx_start_ + k]);
+      const double diff_flux_left  = -rhoD_left*inv_dz[jext]*
+        (params->y_ext_[ jext   *num_states + soot_idx_start_ + k]
+        -params->y_ext_[(jext-1)*num_states + soot_idx_start_ + k]);
+      rhs_diff[j*num_states + soot_idx_start_ + k] -=
+        relative_volume_j*inv_dzm[jext]*(diff_flux_right - diff_flux_left);
     }
   } // for(int j=0; j<num_local_points; ++j) // loop computing rhs
 

@@ -93,8 +93,8 @@ class FlameParams
 
   std::vector<double> step_limiter_;
 
-  std::vector<double> soot_thermophoretic_coefficients_;  // size = num_soot_secs*num_soot_psd*(num_points+1)
-  std::vector<double> soot_diffusion_coefficients_;   // size = num_soot_secs*num_soot_psd*(num_points+1)
+  std::vector<double> soot_thermophoretic_coefficients_;  // size = num_points+1  (bin-independent, -Cth*mu/T)
+  std::vector<double> soot_diffusion_coefficients_;   // size = total_soot_vars*(num_points+1), stores rho*D_soot,k at each face
   std::vector<double> soot_source_coefficients_;   // size = num_soot_secs*num_soot_psd*(num_points+1)
   const double thermophoretic_const_ = 0.554;
 

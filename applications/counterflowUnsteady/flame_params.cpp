@@ -728,9 +728,12 @@ void FlameParams::SetMemory()
   molecular_mass_mix_mid_.assign(num_local_points+1, 0.0);
 
   // create the workspace for the soot coefficients at each grid point
+  const int total_soot_vars = reactor_->GetNumSectionalTotal();
   soot_thermophoretic_coefficients_.assign(num_local_points+1, 0.0);
-  soot_thermophoretic_coefficients_.assign(num_local_points+1, 0.0);  
-  soot_diffusion_coefficients_.assign(num_local_points+1, 0.0);
+  // Per-bin Brownian diffusion coefficient rho*D_soot,k at each face:
+  //   size = total_soot_vars * (num_local_points+1)
+  //   index (face j, bin k) -> j*total_soot_vars + k
+  soot_diffusion_coefficients_.assign(total_soot_vars*(num_local_points+1), 0.0);
 
   // Get convective scheme type
   convective_scheme_type_ = parser_->convective_scheme_type();
