@@ -126,6 +126,7 @@ class CounterflowReactor
 
   int GetSootIdxStart() const;
   void FinalizeSectionalSoot() const;
+  const std::vector<double>& GetSectionsDiameter() const;
  private:
   class Impl;
   Impl *impl_;

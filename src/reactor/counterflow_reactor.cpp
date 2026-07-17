@@ -2295,6 +2295,11 @@ void CounterflowReactor::FinalizeSectionalSoot() const
   impl_->FinalizeSectionalSoot();
 }
 
+const std::vector<double>& CounterflowReactor::GetSectionsDiameter() const
+{
+  return impl_->GetSectionsDiameter();
+}
+
 ReactorError CounterflowReactor::GetLastSootRates(double *coag, double *sg, double *ox,
 						  double *cond, double *nuc,
 						  double *nuc_gas, double *sg_gas,
